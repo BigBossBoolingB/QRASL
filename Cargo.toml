@@ -13,7 +13,7 @@ rs-merkle = "1.2.0"
 tokio = { version = "1", features = ["full"] }
 libp2p = { version = "0.44", features = ["full"] }
 wasmi = "0.9.1"
-sled = "0.34"
+sled = { version = "0.34", features = ["compression"] }
 bincode = "1.3"
 thiserror = "1.0"
 anyhow = "1.0"

@@ -1,4 +1,4 @@
-use crate::primitives::{Block, BlockHeader, Transaction};
+use crate::primitives::{Address, Block, BlockHeader, Transaction};
 use crate::state::StateMachine;
 use anyhow::{Context, Result};
 use sled::Db;

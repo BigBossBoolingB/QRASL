@@ -154,7 +154,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let beacon_chain = Arc::new(Mutex::new(BeaconChain::new()));
 
     let settings = Config::builder()
-        .add_source(config::File::with_name("config"))
+        .add_source(config::File::with_name("config.toml"))
         .build()?;
 
     let is_validator_node = settings.get_bool("node.is_validator").unwrap_or(false);
