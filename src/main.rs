@@ -2,7 +2,7 @@ use crate::beacon_chain::BeaconChain;
 use crate::chain::Chain;
 use crate::miner::mine_block;
 use crate::network::create_swarm;
-use crate::primitives::{Address, Block, Transaction};
+use crate::primitives::{Address, Block, CrossShardMessage, Transaction};
 use ed25519_dalek::Keypair;
 use libp2p::gossipsub::IdentTopic as Topic;
 use libp2p::swarm::SwarmEvent;
@@ -54,6 +54,10 @@ async fn run_shard(
     loop {
         if is_miner {
             let last_block = chain.blocks.last().unwrap();
+            let mut transactions = vec![];
+            let mut cross_shard_messages_to_send = vec![];
+
+            // Create a regular transaction on this shard
             let mut tx = Transaction {
                 sender: miner_address,
                 signature: [0; 64],
@@ -64,10 +68,33 @@ async fn run_shard(
                 fees: 0,
             };
             tx.sign(&miner_keypair);
-            let transactions = vec![tx];
+            transactions.push(tx);
+
+            // Create a cross-shard transaction
+            if shard_id == 0 {
+                let cross_shard_tx = CrossShardMessage {
+                    source_shard_id: 0,
+                    target_shard_id: 1,
+                    payload: format!(
+                        "{}:{}",
+                        serde_json::to_string(&listener_address).unwrap(),
+                        50
+                    )
+                    .into_bytes(),
+                };
+                cross_shard_messages_to_send.push(cross_shard_tx);
+            }
+
+            // Poll for incoming messages from the Beacon Chain
+            let incoming_messages = beacon_chain.lock().unwrap().get_messages_for_shard(shard_id);
 
             println!("Shard {}: Mining new block...", shard_id);
-            let new_block = mine_block(last_block, transactions, difficulty);
+            let new_block = mine_block(
+                last_block,
+                transactions,
+                incoming_messages,
+                difficulty,
+            );
             let block_json = serde_json::to_string(&new_block).unwrap();
 
             if let Err(e) = swarm
@@ -80,6 +107,9 @@ async fn run_shard(
 
             let mut beacon_chain_lock = beacon_chain.lock().unwrap();
             beacon_chain_lock.submit_shard_checkpoint(shard_id, new_block.header.hash());
+            for msg in cross_shard_messages_to_send {
+                beacon_chain_lock.submit_cross_shard_message(msg);
+            }
         }
 
         tokio::select! {

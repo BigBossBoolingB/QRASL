@@ -1,4 +1,4 @@
-use crate::primitives::{Address, Transaction};
+use crate::primitives::{Address, CrossShardMessage, Transaction};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -24,6 +24,33 @@ impl StateMachine {
         self.balances.insert(tx.sender, sender_balance - tx.value);
         self.balances
             .insert(tx.recipient, recipient_balance + tx.value);
+
+        Ok(())
+    }
+
+    pub fn process_cross_shard_message(&mut self, msg: &CrossShardMessage) -> Result<(), &'static str> {
+        // In a real implementation, the payload would be a more complex enum
+        // For now, we'll assume it's a simple "recipient_address:amount" string
+        let payload_str = String::from_utf8(msg.payload.clone()).unwrap();
+        let parts: Vec<&str> = payload_str.split(':').collect();
+        if parts.len() != 2 {
+            return Err("Invalid cross-shard message payload");
+        }
+
+        let recipient_str = parts[0];
+        let amount_str = parts[1];
+
+        let recipient: Address = serde_json::from_str(recipient_str).unwrap();
+        let amount: u128 = amount_str.parse().unwrap();
+
+        let recipient_balance = self.balances.get(&recipient).cloned().unwrap_or(0);
+        self.balances
+            .insert(recipient, recipient_balance + amount);
+
+        println!(
+            "Processed cross-shard message: Credited {:?} with {}",
+            recipient, amount
+        );
 
         Ok(())
     }

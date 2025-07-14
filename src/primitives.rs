@@ -29,12 +29,20 @@ impl BlockHeader {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CrossShardMessage {
+    pub source_shard_id: u64,
+    pub target_shard_id: u64,
+    pub payload: Vec<u8>,
+}
+
 use rs_merkle::{MerkleTree, algorithms::Sha256 as MerkleSha256};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     pub header: BlockHeader,
     pub transactions: Vec<Transaction>,
+    pub cross_shard_messages: Vec<CrossShardMessage>,
 }
 
 impl Block {
@@ -45,6 +53,7 @@ impl Block {
         shard_id: u32,
         nonce: Vec<u8>,
         transactions: Vec<Transaction>,
+        cross_shard_messages: Vec<CrossShardMessage>,
     ) -> Self {
         let transactions_root = Self::calculate_transactions_root(&transactions);
         let header = BlockHeader {
@@ -58,6 +67,7 @@ impl Block {
         Self {
             header,
             transactions,
+            cross_shard_messages,
         }
     }
 

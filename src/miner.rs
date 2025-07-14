@@ -1,7 +1,12 @@
-use crate::primitives::{Block, Transaction};
+use crate::primitives::{Block, CrossShardMessage, Transaction};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn mine_block(last_block: &Block, transactions: Vec<Transaction>, difficulty: u32) -> Block {
+pub fn mine_block(
+    last_block: &Block,
+    transactions: Vec<Transaction>,
+    cross_shard_messages: Vec<CrossShardMessage>,
+    difficulty: u32,
+) -> Block {
     let mut nonce = 0;
     loop {
         let timestamp = SystemTime::now()
@@ -15,6 +20,7 @@ pub fn mine_block(last_block: &Block, transactions: Vec<Transaction>, difficulty
             0, // Placeholder shard ID
             nonce.to_string().into_bytes(),
             transactions.clone(),
+            cross_shard_messages.clone(),
         );
 
         let hash = block.header.hash();

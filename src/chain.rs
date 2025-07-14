@@ -38,6 +38,10 @@ impl Chain {
             self.state_machine.process_transaction(tx)?;
         }
 
+        for msg in &block.cross_shard_messages {
+            self.state_machine.process_cross_shard_message(msg)?;
+        }
+
         self.block_hashes.insert(block.header.hash(), self.blocks.len());
         self.blocks.push(block);
         Ok(())
