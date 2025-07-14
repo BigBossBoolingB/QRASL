@@ -1,4 +1,5 @@
 use crate::governance::{Proposal, Vote};
+use crate::nft::{NftId, NonFungibleToken};
 use crate::primitives::{Address, CrossShardMessage, Transaction};
 use sled::Db;
 use std::collections::HashMap;
@@ -14,6 +15,15 @@ impl StateMachine {
     }
 
     pub fn process_transaction(&mut self, tx: &Transaction) -> Result<(), &'static str> {
+        let payload_str = String::from_utf8(tx.payload.clone()).unwrap_or_default();
+        if payload_str.starts_with("CREATE_COLLECTION") {
+            return self.handle_create_collection(tx);
+        } else if payload_str.starts_with("MINT_NFT") {
+            return self.handle_mint_nft(tx);
+        } else if payload_str.starts_with("TRANSFER_NFT") {
+            return self.handle_transfer_nft(tx);
+        }
+
         // Contract deployment
         if !tx.payload.is_empty() && tx.value == 0 {
             self.db.insert(b"contract_codes", bincode::serialize(&tx.recipient).unwrap()).unwrap();
@@ -149,5 +159,69 @@ impl StateMachine {
         }
 
         Ok(())
+    }
+
+    pub fn handle_create_collection(&mut self, tx: &Transaction) -> Result<(), &'static str> {
+        // In a real implementation, we would have a more robust way of managing collections
+        println!("Collection created by {:?}", tx.sender);
+        Ok(())
+    }
+
+    pub fn handle_mint_nft(&mut self, tx: &Transaction) -> Result<(), &'static str> {
+        let payload_str = String::from_utf8(tx.payload.clone()).unwrap();
+        let parts: Vec<&str> = payload_str.split(':').collect();
+        let collection_id: u64 = parts[0].parse().unwrap();
+        let token_id: u64 = parts[1].parse().unwrap();
+        let metadata_uri = parts[2].to_string();
+
+        let nft_id = NftId {
+            collection_id,
+            token_id,
+        };
+        let nft = NonFungibleToken {
+            id: nft_id.clone(),
+            owner: tx.sender,
+            metadata_uri,
+        };
+
+        self.db
+            .insert(
+                &bincode::serialize(&nft_id).unwrap(),
+                bincode::serialize(&nft).unwrap(),
+            )
+            .unwrap();
+        println!("NFT {:?} minted by {:?}", nft_id, tx.sender);
+        Ok(())
+    }
+
+    pub fn handle_transfer_nft(&mut self, tx: &Transaction) -> Result<(), &'static str> {
+        let payload_str = String::from_utf8(tx.payload.clone()).unwrap();
+        let parts: Vec<&str> = payload_str.split(':').collect();
+        let collection_id: u64 = parts[0].parse().unwrap();
+        let token_id: u64 = parts[1].parse().unwrap();
+        let recipient: Address = serde_json::from_str(parts[2]).unwrap();
+
+        let nft_id = NftId {
+            collection_id,
+            token_id,
+        };
+
+        if let Some(nft_bytes) = self.db.get(&bincode::serialize(&nft_id).unwrap()).unwrap() {
+            let mut nft: NonFungibleToken = bincode::deserialize(&nft_bytes).unwrap();
+            if nft.owner != tx.sender {
+                return Err("Transaction sender is not the owner of the NFT");
+            }
+            nft.owner = recipient;
+            self.db
+                .insert(
+                    &bincode::serialize(&nft_id).unwrap(),
+                    bincode::serialize(&nft).unwrap(),
+                )
+                .unwrap();
+            println!("NFT {:?} transferred to {:?}", nft_id, recipient);
+            Ok(())
+        } else {
+            Err("NFT not found")
+        }
     }
 }
