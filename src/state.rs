@@ -1,4 +1,5 @@
 use crate::governance::{Proposal, Vote};
+use crate::marketplace::Listing;
 use crate::nft::{NftId, NonFungibleToken};
 use crate::primitives::{Address, CrossShardMessage, Transaction};
 use sled::Db;
@@ -22,6 +23,12 @@ impl StateMachine {
             return self.handle_mint_nft(tx);
         } else if payload_str.starts_with("TRANSFER_NFT") {
             return self.handle_transfer_nft(tx);
+        } else if payload_str.starts_with("LIST_NFT") {
+            return self.handle_list_nft(tx);
+        } else if payload_str.starts_with("CANCEL_LISTING") {
+            return self.handle_cancel_listing(tx);
+        } else if payload_str.starts_with("BUY_NFT") {
+            return self.handle_buy_nft(tx);
         }
 
         // Contract deployment
@@ -222,6 +229,121 @@ impl StateMachine {
             Ok(())
         } else {
             Err("NFT not found")
+        }
+    }
+
+    pub fn handle_list_nft(&mut self, tx: &Transaction) -> Result<(), &'static str> {
+        let payload_str = String::from_utf8(tx.payload.clone()).unwrap();
+        let parts: Vec<&str> = payload_str.split(':').collect();
+        let collection_id: u64 = parts[1].parse().unwrap();
+        let token_id: u64 = parts[2].parse().unwrap();
+        let price: u128 = parts[3].parse().unwrap();
+
+        let nft_id = NftId {
+            collection_id,
+            token_id,
+        };
+
+        if let Some(nft_bytes) = self.db.get(&bincode::serialize(&nft_id).unwrap()).unwrap() {
+            let mut nft: NonFungibleToken = bincode::deserialize(&nft_bytes).unwrap();
+            if nft.owner != tx.sender {
+                return Err("Transaction sender is not the owner of the NFT");
+            }
+
+            // Escrow NFT
+            let marketplace_address: Address = [0; 32]; // Special address for the marketplace
+            nft.owner = marketplace_address;
+            self.db
+                .insert(
+                    &bincode::serialize(&nft_id).unwrap(),
+                    bincode::serialize(&nft).unwrap(),
+                )
+                .unwrap();
+
+            let listing = Listing {
+                nft_id: nft_id.clone(),
+                seller: tx.sender,
+                price,
+            };
+            self.db
+                .insert(
+                    &bincode::serialize(&nft_id).unwrap(),
+                    bincode::serialize(&listing).unwrap(),
+                )
+                .unwrap();
+            println!("NFT {:?} listed for sale by {:?}", nft_id, tx.sender);
+            Ok(())
+        } else {
+            Err("NFT not found")
+        }
+    }
+
+    pub fn handle_cancel_listing(&mut self, tx: &Transaction) -> Result<(), &'static str> {
+        // ... implementation for cancelling a listing
+        Ok(())
+    }
+
+    pub fn handle_buy_nft(&mut self, tx: &Transaction) -> Result<(), &'static str> {
+        let payload_str = String::from_utf8(tx.payload.clone()).unwrap();
+        let parts: Vec<&str> = payload_str.split(':').collect();
+        let collection_id: u64 = parts[1].parse().unwrap();
+        let token_id: u64 = parts[2].parse().unwrap();
+
+        let nft_id = NftId {
+            collection_id,
+            token_id,
+        };
+
+        if let Some(listing_bytes) = self.db.get(&bincode::serialize(&nft_id).unwrap()).unwrap() {
+            let listing: Listing = bincode::deserialize(&listing_bytes).unwrap();
+            let buyer_balance: u128 = self
+                .db
+                .get(&bincode::serialize(&tx.sender).unwrap())
+                .unwrap()
+                .map(|v| bincode::deserialize(&v).unwrap())
+                .unwrap_or(0);
+
+            if buyer_balance < listing.price {
+                return Err("Insufficient funds");
+            }
+
+            // Atomic swap
+            let seller_balance: u128 = self
+                .db
+                .get(&bincode::serialize(&listing.seller).unwrap())
+                .unwrap()
+                .map(|v| bincode::deserialize(&v).unwrap())
+                .unwrap_or(0);
+
+            self.db
+                .insert(
+                    &bincode::serialize(&tx.sender).unwrap(),
+                    bincode::serialize(&(buyer_balance - listing.price)).unwrap(),
+                )
+                .unwrap();
+            self.db
+                .insert(
+                    &bincode::serialize(&listing.seller).unwrap(),
+                    bincode::serialize(&(seller_balance + listing.price)).unwrap(),
+                )
+                .unwrap();
+
+            if let Some(nft_bytes) = self.db.get(&bincode::serialize(&nft_id).unwrap()).unwrap() {
+                let mut nft: NonFungibleToken = bincode::deserialize(&nft_bytes).unwrap();
+                nft.owner = tx.sender;
+                self.db
+                    .insert(
+                        &bincode::serialize(&nft_id).unwrap(),
+                        bincode::serialize(&nft).unwrap(),
+                    )
+                    .unwrap();
+                println!("NFT {:?} sold to {:?}", nft_id, tx.sender);
+                Ok(())
+            } else {
+                Err("NFT not found after purchase, this should not happen")
+            }
+        } else {
+            Err("Listing not found")
         }
     }
 }

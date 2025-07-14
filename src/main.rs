@@ -26,6 +26,7 @@ mod vm;
 mod governance;
 mod staking;
 mod nft;
+mod marketplace;
 
 async fn run_shard(
     shard_id: u64,
@@ -57,8 +58,8 @@ async fn run_shard(
     println!("------------------------------------");
 
     let mut slot = 0;
-    let mut nft_minted = false;
-    let mut nft_transferred = false;
+    let mut nft_listed = false;
+    let mut nft_bought = false;
 
     loop {
         let active_validators = beacon_chain.lock().unwrap().active_validators.clone();
@@ -71,36 +72,32 @@ async fn run_shard(
                 let cross_shard_messages_to_send = vec![];
 
                 if shard_id == 0 {
-                    if !nft_minted {
+                    if !nft_listed {
                         let mut tx = Transaction {
-                            sender: validator_address,
+                            sender: nominator_address, // Nominator lists the NFT
                             signature: [0; 64],
-                            recipient: [4; 32], // NFT contract address
+                            recipient: [5; 32], // Marketplace contract address
                             value: 0,
-                            payload: "MINT_NFT:1:1:http://example.com/proto-critter".into(),
+                            payload: "LIST_NFT:1:1:100".into(),
+                            gas_limit: 0,
+                            fees: 0,
+                        };
+                        tx.sign(&nominator_keypair);
+                        transactions.push(tx);
+                        nft_listed = true;
+                    } else if !nft_bought {
+                        let mut tx = Transaction {
+                            sender: validator_address, // Validator buys the NFT
+                            signature: [0; 64],
+                            recipient: [5; 32], // Marketplace contract address
+                            value: 0,
+                            payload: "BUY_NFT:1:1".into(),
                             gas_limit: 0,
                             fees: 0,
                         };
                         tx.sign(&validator_keypair);
                         transactions.push(tx);
-                        nft_minted = true;
-                    } else if !nft_transferred {
-                        let mut tx = Transaction {
-                            sender: validator_address,
-                            signature: [0; 64],
-                            recipient: [4; 32], // NFT contract address
-                            value: 0,
-                            payload: format!(
-                                "TRANSFER_NFT:1:1:{}",
-                                serde_json::to_string(&nominator_address)?
-                            )
-                            .into(),
-                            gas_limit: 0,
-                            fees: 0,
-                        };
-                        tx.sign(&validator_keypair);
-                        transactions.push(tx);
-                        nft_transferred = true;
+                        nft_bought = true;
                     }
                 }
 
