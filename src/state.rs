@@ -1,49 +1,60 @@
 use crate::governance::{Proposal, Vote};
 use crate::primitives::{Address, CrossShardMessage, Transaction};
+use sled::Db;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct StateMachine {
-    pub balances: HashMap<Address, u128>,
-    pub contract_codes: HashMap<Address, Vec<u8>>,
-    pub contract_storage: HashMap<Address, HashMap<[u8; 32], [u8; 32]>>,
-    pub proposals: HashMap<u64, Proposal>,
-    next_proposal_id: u64,
+    db: Db,
 }
 
 impl StateMachine {
-    pub fn new() -> Self {
-        Self {
-            balances: HashMap::new(),
-            contract_codes: HashMap::new(),
-            contract_storage: HashMap::new(),
-            proposals: HashMap::new(),
-            next_proposal_id: 0,
-        }
+    pub fn new(db: Db) -> Self {
+        Self { db }
     }
 
     pub fn process_transaction(&mut self, tx: &Transaction) -> Result<(), &'static str> {
         // Contract deployment
         if !tx.payload.is_empty() && tx.value == 0 {
-            self.contract_codes.insert(tx.recipient, tx.payload.clone());
+            self.db.insert(b"contract_codes", bincode::serialize(&tx.recipient).unwrap()).unwrap();
             println!("Deployed contract at address {:?}", tx.recipient);
             return Ok(());
         }
 
-        if self.contract_codes.contains_key(&tx.recipient) {
+        if self.db.contains_key(b"contract_codes").unwrap() {
             return self.process_contract_call(tx);
         }
 
-        let sender_balance = self.balances.get(&tx.sender).cloned().unwrap_or(0);
+        let sender_balance: u128 = self
+            .db
+            .get(&bincode::serialize(&tx.sender).unwrap())
+            .unwrap()
+            .map(|v| bincode::deserialize(&v).unwrap())
+            .unwrap_or(0);
+
         if sender_balance < tx.value {
             return Err("Insufficient funds");
         }
 
-        let recipient_balance = self.balances.get(&tx.recipient).cloned().unwrap_or(0);
+        let recipient_balance: u128 = self
+            .db
+            .get(&bincode::serialize(&tx.recipient).unwrap())
+            .unwrap()
+            .map(|v| bincode::deserialize(&v).unwrap())
+            .unwrap_or(0);
 
-        self.balances.insert(tx.sender, sender_balance - tx.value);
-        self.balances
-            .insert(tx.recipient, recipient_balance + tx.value);
+        self.db
+            .insert(
+                &bincode::serialize(&tx.sender).unwrap(),
+                bincode::serialize(&(sender_balance - tx.value)).unwrap(),
+            )
+            .unwrap();
+        self.db
+            .insert(
+                &bincode::serialize(&tx.recipient).unwrap(),
+                bincode::serialize(&(recipient_balance + tx.value)).unwrap(),
+            )
+            .unwrap();
 
         Ok(())
     }

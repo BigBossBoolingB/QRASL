@@ -1,47 +1,72 @@
 use crate::primitives::{Block, BlockHeader, Transaction};
 use crate::state::StateMachine;
+use anyhow::{Context, Result};
+use sled::Db;
 use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum ChainError {
+    #[error("Database error: {0}")]
+    DatabaseError(#[from] sled::Error),
+    #[error("Serialization error: {0}")]
+    SerializationError(#[from] bincode::Error),
+    #[error("Block validation failed: {0}")]
+    ValidationFailed(String),
+}
 
 pub struct Chain {
-    pub blocks: Vec<Block>,
-    pub block_hashes: HashMap<[u8; 32], usize>,
+    pub db: Db,
     pub state_machine: StateMachine,
     pub shard_id: u64,
 }
 
 impl Chain {
-    pub fn new(shard_id: u64) -> Self {
-        let genesis_block = Block::new(
-            [0; 32],
-            [0; 32],
-            0,
-            shard_id as u32,
-            vec![0],
-            vec![],
-            vec![],
-        );
-        let mut block_hashes = HashMap::new();
-        block_hashes.insert(genesis_block.header.hash(), 0);
+    pub fn new(shard_id: u64) -> Result<Self> {
+        let db = sled::open(format!("db/shard_{}", shard_id))?;
+        let state_machine = StateMachine::new(db.clone());
 
-        Self {
-            blocks: vec![genesis_block],
-            block_hashes,
-            state_machine: StateMachine::new(),
-            shard_id,
+        if db.is_empty() {
+            let genesis_block = Block::new(
+                [0; 32],
+                [0; 32],
+                0,
+                shard_id as u32,
+                vec![0],
+                vec![],
+                vec![],
+            );
+            let block_hash = genesis_block.header.hash();
+            db.insert(b"tip", &block_hash)?;
+            db.insert(&block_hash, bincode::serialize(&genesis_block)?)?;
         }
+
+        Ok(Self {
+            db,
+            state_machine,
+            shard_id,
+        })
     }
 
-    pub fn add_block(&mut self, block: Block) -> Result<(), &'static str> {
-        let last_block = self.blocks.last().ok_or("Chain has no blocks")?;
+    pub fn add_block(&mut self, block: Block) -> Result<()> {
+        let tip_hash = self.db.get(b"tip")?.context("Failed to get tip hash")?;
+        let last_block_bytes = self.db.get(&tip_hash)?.context("Failed to get last block")?;
+        let last_block: Block = bincode::deserialize(&last_block_bytes)?;
+
         if block.header.parent_hash != last_block.header.hash() {
-            return Err("Block's parent hash does not match the last block's hash");
+            return Err(ChainError::ValidationFailed(
+                "Block's parent hash does not match the last block's hash".to_string(),
+            )
+            .into());
         }
 
         for tx in &block.transactions {
-            // This is a simplified check. A real implementation would use a more robust
-            // transaction typing system.
-            if self.shard_id == 1 && (String::from_utf8_lossy(&tx.payload).starts_with("PROPOSE") || String::from_utf8_lossy(&tx.payload).starts_with("VOTE")) {
-                self.state_machine.process_governance_tx(tx, self.shard_id)?;
+            if self.shard_id == 1
+                && (String::from_utf8_lossy(&tx.payload).starts_with("PROPOSE")
+                    || String::from_utf8_lossy(&tx.payload).starts_with("VOTE"))
+            {
+                self.state_machine
+                    .process_governance_tx(tx, self.shard_id)?;
             } else {
                 self.state_machine.process_transaction(tx)?;
             }
@@ -51,8 +76,10 @@ impl Chain {
             self.state_machine.process_cross_shard_message(msg)?;
         }
 
-        self.block_hashes.insert(block.header.hash(), self.blocks.len());
-        self.blocks.push(block);
+        let block_hash = block.header.hash();
+        self.db.insert(&block_hash, bincode::serialize(&block)?)?;
+        self.db.insert(b"tip", &block_hash)?;
+
         Ok(())
     }
 }

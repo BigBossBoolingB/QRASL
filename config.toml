@@ -1,0 +1,6 @@
+[node]
+is_miner = false
+shard_id = 0
+
+[network]
+difficulty = 12
