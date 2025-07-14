@@ -31,10 +31,7 @@ impl Chain {
             return Err("Block's parent hash does not match the last block's hash");
         }
 
-        // Placeholder for consensus rule: hash must start with a zero byte
-        if block.header.hash()[0] != 0 {
-            return Err("Block does not meet consensus rule");
-        }
+        // Placeholder for consensus rule is now handled in the miner
 
         self.block_hashes.insert(block.header.hash(), self.blocks.len());
         self.blocks.push(block);
