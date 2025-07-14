@@ -17,7 +17,9 @@ pub struct QraslBehaviour {
     pub gossipsub: Gossipsub,
     pub mdns: Mdns,
     #[behaviour(ignore)]
-    pub tx: mpsc::UnboundedSender<String>,
+    pub block_tx: mpsc::UnboundedSender<String>,
+    #[behaviour(ignore)]
+    pub tx_tx: mpsc::UnboundedSender<String>,
 }
 
 impl NetworkBehaviourEventProcess<GossipsubEvent> for QraslBehaviour {
@@ -29,9 +31,14 @@ impl NetworkBehaviourEventProcess<GossipsubEvent> for QraslBehaviour {
         } = event
         {
             let msg_str = String::from_utf8_lossy(&message.data);
-            println!("Got message: {} from {:?}", msg_str, message.source);
-            if let Err(e) = self.tx.send(msg_str.to_string()) {
-                eprintln!("Error sending message to main loop: {}", e);
+            if message.topic == Topic::new("new-blocks").hash() {
+                if let Err(e) = self.block_tx.send(msg_str.to_string()) {
+                    eprintln!("Error sending block to main loop: {}", e);
+                }
+            } else if message.topic == Topic::new("unconfirmed-transactions").hash() {
+                if let Err(e) = self.tx_tx.send(msg_str.to_string()) {
+                    eprintln!("Error sending tx to main loop: {}", e);
+                }
             }
         }
     }
@@ -57,7 +64,8 @@ impl NetworkBehaviourEventProcess<MdnsEvent> for QraslBehaviour {
 }
 
 pub async fn create_swarm(
-    tx: mpsc::UnboundedSender<String>,
+    block_tx: mpsc::UnboundedSender<String>,
+    tx_tx: mpsc::UnboundedSender<String>,
 ) -> Result<Swarm<QraslBehaviour>, Box<dyn std::error::Error>> {
     let local_key = libp2p::identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(local_key.public());

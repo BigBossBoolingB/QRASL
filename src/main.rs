@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use config::Config;
 use crate::beacon_chain::BeaconChain;
 use crate::chain::Chain;
+use crate::mempool::Mempool;
 use crate::network::create_swarm;
 use crate::primitives::{Address, Block, CrossShardMessage, Transaction};
 use crate::rpc;
@@ -29,6 +30,7 @@ mod staking;
 mod nft;
 mod marketplace;
 mod rpc;
+mod mempool;
 
 async fn run_shard(
     shard_id: u64,
@@ -79,10 +81,8 @@ async fn run_shard(
             if current_validator == validator_address {
                 let last_block_bytes = chain.db.get(b"tip")?.context("Failed to get last block")?;
                 let last_block: Block = bincode::deserialize(&last_block_bytes)?;
-                let mut transactions = vec![];
+                let transactions = mempool.lock().unwrap().get_transactions();
                 let cross_shard_messages_to_send = vec![];
-
-                // ... (transaction creation logic remains the same)
 
                 let new_block = Block::new(
                     last_block.header.hash(),
@@ -107,12 +107,19 @@ async fn run_shard(
         }
 
         tokio::select! {
-            Some(msg) = rx.recv() => {
+            Some(msg) = block_rx.recv() => {
                 let block: Block = serde_json::from_str(&msg)?;
                 if let Err(e) = chain.lock().unwrap().add_block(block, &active_validators) {
                     eprintln!("Error adding block: {}", e);
                 } else {
+                    mempool.lock().unwrap().clear();
                     println!("------------------------------------");
+                }
+            }
+            Some(msg) = tx_rx.recv() => {
+                let tx: Transaction = serde_json::from_str(&msg)?;
+                if let Err(e) = mempool.lock().unwrap().add_transaction(tx) {
+                    eprintln!("Error adding transaction to mempool: {}", e);
                 }
             }
             event = swarm.select_next_some() => {
@@ -173,6 +180,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         });
     }
+
+    // External citizen simulation
+    task::spawn(async move {
+        let client = Client::new();
+        let mut csprng = OsRng {};
+        let keypair = Keypair::generate(&mut csprng);
+        let address = keypair.public.to_bytes();
+
+        loop {
+            time::sleep(Duration::from_secs(5)).await;
+            let mut tx = Transaction {
+                sender: address,
+                signature: [0; 64],
+                recipient: [0; 32],
+                value: 1,
+                payload: vec![],
+                gas_limit: 0,
+                fees: 0,
+            };
+            tx.sign(&keypair);
+
+            let res = client
+                .post("http://127.0.0.1:9933")
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "qrasl_submitTransaction",
+                    "params": [tx],
+                    "id": 1,
+                }))
+                .send()
+                .await;
+            println!("External citizen submitted transaction: {:?}", res);
+        }
+    });
 
     // Keep the main thread alive
     loop {

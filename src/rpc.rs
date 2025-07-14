@@ -1,4 +1,5 @@
-use crate::primitives::{Address, Block};
+use crate::mempool::Mempool;
+use crate::primitives::{Address, Block, Transaction};
 use jsonrpsee::{
     core::{async_trait, RpcResult},
     proc_macros::rpc,
@@ -18,15 +19,34 @@ pub trait QraslRpc {
 
     #[method(name = "qrasl_getNftOwner")]
     async fn get_nft_owner(&self, collection_id: u64, token_id: u64) -> RpcResult<Option<Address>>;
+
+    #[method(name = "qrasl_submitTransaction")]
+    async fn submit_transaction(&self, tx: Transaction) -> RpcResult<()>;
 }
+
+use libp2p::gossipsub::IdentTopic as Topic;
+use libp2p::swarm::Swarm;
 
 pub struct QraslRpcServer {
     chain: Arc<Mutex<Chain>>,
+    mempool: Arc<Mutex<Mempool>>,
+    swarm: Swarm<crate::network::QraslBehaviour>,
+    tx_topic: Topic,
 }
 
 impl QraslRpcServer {
-    pub fn new(chain: Arc<Mutex<Chain>>) -> Self {
-        Self { chain }
+    pub fn new(
+        chain: Arc<Mutex<Chain>>,
+        mempool: Arc<Mutex<Mempool>>,
+        swarm: Swarm<crate::network::QraslBehaviour>,
+        tx_topic: Topic,
+    ) -> Self {
+        Self {
+            chain,
+            mempool,
+            swarm,
+            tx_topic,
+        }
     }
 }
 
@@ -64,12 +84,36 @@ impl QraslRpcServer for QraslRpcServer {
             Ok(None)
         }
     }
+
+    async fn submit_transaction(&self, tx: Transaction) -> RpcResult<()> {
+        let mut mempool = self.mempool.lock().unwrap();
+        mempool
+            .add_transaction(tx.clone())
+            .map_err(|e| jsonrpsee::core::Error::Custom(e.to_string()))?;
+
+        let tx_json = serde_json::to_string(&tx).unwrap();
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(self.tx_topic.clone(), tx_json.as_bytes())
+            .map_err(|e| jsonrpsee::core::Error::Custom(e.to_string()))?;
+
+        Ok(())
+    }
 }
 
-pub async fn run_rpc_server(chain: Arc<Mutex<Chain>>) -> Result<SocketAddr, anyhow::Error> {
+use libp2p::gossipsub::IdentTopic as Topic;
+use libp2p::swarm::Swarm;
+
+pub async fn run_rpc_server(
+    chain: Arc<Mutex<Chain>>,
+    mempool: Arc<Mutex<Mempool>>,
+    mut swarm: Swarm<crate::network::QraslBehaviour>,
+    tx_topic: Topic,
+) -> Result<SocketAddr, anyhow::Error> {
     let server = WsServerBuilder::default().build("127.0.0.1:0").await?;
     let addr = server.local_addr()?;
-    let handle = server.start(QraslRpcServer::new(chain).into_rpc())?;
+    let handle = server.start(QraslRpcServer::new(chain, mempool, swarm, tx_topic).into_rpc())?;
 
     tokio::spawn(handle.stopped());
 
