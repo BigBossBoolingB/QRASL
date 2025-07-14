@@ -1,5 +1,9 @@
+[simulation]
+node_count = 5
+validator_count = 2
+
 [node]
-is_miner = false
+is_validator = true
 shard_id = 0
 
 [network]
