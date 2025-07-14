@@ -9,6 +9,7 @@ use libp2p::swarm::SwarmEvent;
 use libp2p::Swarm;
 use rand::rngs::OsRng;
 use std::error::Error;
+use std::fs;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::task;
@@ -19,6 +20,7 @@ mod miner;
 mod network;
 mod state;
 mod beacon_chain;
+mod vm;
 
 async fn run_shard(
     shard_id: u64,
@@ -51,38 +53,42 @@ async fn run_shard(
     println!("Shard {}: Initial Balances: {:?}", shard_id, chain.state_machine.balances);
     println!("------------------------------------");
 
+    let mut contract_deployed = false;
+
     loop {
         if is_miner {
             let last_block = chain.blocks.last().unwrap();
             let mut transactions = vec![];
             let mut cross_shard_messages_to_send = vec![];
 
-            // Create a regular transaction on this shard
-            let mut tx = Transaction {
-                sender: miner_address,
-                signature: [0; 64],
-                recipient: listener_address,
-                value: 10,
-                payload: vec![],
-                gas_limit: 0,
-                fees: 0,
-            };
-            tx.sign(&miner_keypair);
-            transactions.push(tx);
-
-            // Create a cross-shard transaction
-            if shard_id == 0 {
-                let cross_shard_tx = CrossShardMessage {
-                    source_shard_id: 0,
-                    target_shard_id: 1,
-                    payload: format!(
-                        "{}:{}",
-                        serde_json::to_string(&listener_address).unwrap(),
-                        50
-                    )
-                    .into_bytes(),
+            // Deploy the counter contract
+            if !contract_deployed {
+                let contract_code = fs::read("contracts/counter_contract.wasm")?;
+                let mut tx = Transaction {
+                    sender: miner_address,
+                    signature: [0; 64],
+                    recipient: [2; 32], // Contract address
+                    value: 0,
+                    payload: contract_code,
+                    gas_limit: 0,
+                    fees: 0,
                 };
-                cross_shard_messages_to_send.push(cross_shard_tx);
+                tx.sign(&miner_keypair);
+                transactions.push(tx);
+                contract_deployed = true;
+            } else {
+                // Call the counter contract
+                let mut tx = Transaction {
+                    sender: miner_address,
+                    signature: [0; 64],
+                    recipient: [2; 32], // Contract address
+                    value: 0,
+                    payload: vec![], // No payload for increment
+                    gas_limit: 0,
+                    fees: 0,
+                };
+                tx.sign(&miner_keypair);
+                transactions.push(tx);
             }
 
             // Poll for incoming messages from the Beacon Chain
@@ -121,6 +127,7 @@ async fn run_shard(
                         println!("Shard {}: Block #{} Added!", shard_id, chain.blocks.len() - 1);
                         println!("  Hash: {:?}", new_block_header.hash());
                         println!("  Balances: {:?}", chain.state_machine.balances);
+                        println!("  Contract Storage: {:?}", chain.state_machine.contract_storage);
                         println!("------------------------------------");
                     }
                     Err(e) => {

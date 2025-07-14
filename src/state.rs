@@ -4,16 +4,31 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct StateMachine {
     pub balances: HashMap<Address, u128>,
+    pub contract_codes: HashMap<Address, Vec<u8>>,
+    pub contract_storage: HashMap<Address, HashMap<[u8; 32], [u8; 32]>>,
 }
 
 impl StateMachine {
     pub fn new() -> Self {
         Self {
             balances: HashMap::new(),
+            contract_codes: HashMap::new(),
+            contract_storage: HashMap::new(),
         }
     }
 
     pub fn process_transaction(&mut self, tx: &Transaction) -> Result<(), &'static str> {
+        // Contract deployment
+        if !tx.payload.is_empty() && tx.value == 0 {
+            self.contract_codes.insert(tx.recipient, tx.payload.clone());
+            println!("Deployed contract at address {:?}", tx.recipient);
+            return Ok(());
+        }
+
+        if self.contract_codes.contains_key(&tx.recipient) {
+            return self.process_contract_call(tx);
+        }
+
         let sender_balance = self.balances.get(&tx.sender).cloned().unwrap_or(0);
         if sender_balance < tx.value {
             return Err("Insufficient funds");
@@ -26,6 +41,10 @@ impl StateMachine {
             .insert(tx.recipient, recipient_balance + tx.value);
 
         Ok(())
+    }
+
+    pub fn process_contract_call(&mut self, tx: &Transaction) -> Result<(), &'static str> {
+        crate::vm::execute_contract(self, tx)
     }
 
     pub fn process_cross_shard_message(&mut self, msg: &CrossShardMessage) -> Result<(), &'static str> {
