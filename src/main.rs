@@ -11,6 +11,7 @@ use rand::rngs::OsRng;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+use tokio::task;
 
 mod primitives;
 mod chain;
@@ -19,14 +20,15 @@ mod network;
 mod state;
 mod beacon_chain;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let beacon_chain = Arc::new(Mutex::new(BeaconChain::new()));
-
+async fn run_shard(
+    shard_id: u64,
+    is_miner: bool,
+    beacon_chain: Arc<Mutex<BeaconChain>>,
+) -> Result<(), Box<dyn Error>> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut swarm = create_swarm(tx).await?;
 
-    let topic = Topic::new("new-blocks");
+    let topic = Topic::new(format!("shard-{}-new-blocks", shard_id));
 
     let mut chain = Chain::new();
     let difficulty = 12;
@@ -41,22 +43,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Give the miner some initial funds in the genesis state
     chain.state_machine.balances.insert(miner_address, 1000);
 
-    println!("QRASL Blockchain Simulation Started!");
+    println!("Shard {}: Simulation Started!", shard_id);
     println!("------------------------------------");
-    println!("Miner Address: {:?}", miner_address);
-    println!("Listener Address: {:?}", listener_address);
-    println!("Genesis Block: {:?}", chain.blocks[0].header.hash());
-    println!("Initial Balances: {:?}", chain.state_machine.balances);
+    println!("Shard {}: Miner Address: {:?}", shard_id, miner_address);
+    println!("Shard {}: Listener Address: {:?}", shard_id, listener_address);
+    println!("Shard {}: Genesis Block: {:?}", shard_id, chain.blocks[0].header.hash());
+    println!("Shard {}: Initial Balances: {:?}", shard_id, chain.state_machine.balances);
     println!("------------------------------------");
-
-    let mut is_miner = false;
-    if let Some(arg) = std::env::args().nth(1) {
-        if arg == "miner" {
-            is_miner = true;
-        }
-    }
-
-    let beacon_chain_clone = beacon_chain.clone();
 
     loop {
         if is_miner {
@@ -73,7 +66,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             tx.sign(&miner_keypair);
             let transactions = vec![tx];
 
-            println!("Shard 0: Mining new block...");
+            println!("Shard {}: Mining new block...", shard_id);
             let new_block = mine_block(last_block, transactions, difficulty);
             let block_json = serde_json::to_string(&new_block).unwrap();
 
@@ -85,8 +78,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 eprintln!("Error publishing block: {:?}", e);
             }
 
-            let mut beacon_chain_lock = beacon_chain_clone.lock().unwrap();
-            beacon_chain_lock.submit_shard_checkpoint(0, new_block.header.hash());
+            let mut beacon_chain_lock = beacon_chain.lock().unwrap();
+            beacon_chain_lock.submit_shard_checkpoint(shard_id, new_block.header.hash());
         }
 
         tokio::select! {
@@ -95,7 +88,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 match chain.add_block(block) {
                     Ok(_) => {
                         let new_block_header = chain.blocks.last().unwrap().header.clone();
-                        println!("Shard 0: Block #{} Added!", chain.blocks.len() - 1);
+                        println!("Shard {}: Block #{} Added!", shard_id, chain.blocks.len() - 1);
                         println!("  Hash: {:?}", new_block_header.hash());
                         println!("  Balances: {:?}", chain.state_machine.balances);
                         println!("------------------------------------");
@@ -107,9 +100,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             event = swarm.select_next_some() => {
                 if let SwarmEvent::NewListenAddr { address, .. } = event {
-                    println!("Listening on {}", address);
+                    println!("Shard {}: Listening on {}", shard_id, address);
                 }
             }
         }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let beacon_chain = Arc::new(Mutex::new(BeaconChain::new()));
+
+    let args: Vec<String> = std::env::args().collect();
+    let is_miner = args.len() > 1 && args[1] == "miner";
+    let shard_id: u64 = if args.len() > 2 {
+        args[2].parse().unwrap_or(0)
+    } else {
+        0
+    };
+
+    if shard_id == 0 {
+        let beacon_chain_clone = beacon_chain.clone();
+        task::spawn(async move {
+            run_shard(0, is_miner, beacon_chain_clone).await.unwrap();
+        });
+    }
+
+    if shard_id == 1 {
+        let beacon_chain_clone = beacon_chain.clone();
+        task::spawn(async move {
+            run_shard(1, is_miner, beacon_chain_clone).await.unwrap();
+        });
+    }
+
+    // Keep the main thread alive
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
     }
 }
