@@ -48,7 +48,7 @@ impl Chain {
         })
     }
 
-    pub fn add_block(&mut self, block: Block) -> Result<()> {
+    pub fn add_block(&mut self, block: Block, active_validators: &[Address]) -> Result<()> {
         let tip_hash = self.db.get(b"tip")?.context("Failed to get tip hash")?;
         let last_block_bytes = self.db.get(&tip_hash)?.context("Failed to get last block")?;
         let last_block: Block = bincode::deserialize(&last_block_bytes)?;
@@ -56,6 +56,18 @@ impl Chain {
         if block.header.parent_hash != last_block.header.hash() {
             return Err(ChainError::ValidationFailed(
                 "Block's parent hash does not match the last block's hash".to_string(),
+            )
+            .into());
+        }
+
+        // Verify the block's signature
+        let validator_address_vec = &block.header.nonce;
+        let mut validator_address = [0u8; 32];
+        validator_address.copy_from_slice(validator_address_vec);
+
+        if !active_validators.contains(&validator_address) {
+            return Err(ChainError::ValidationFailed(
+                "Block signed by non-active validator".to_string(),
             )
             .into());
         }

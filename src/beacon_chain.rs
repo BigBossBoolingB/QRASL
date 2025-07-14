@@ -1,9 +1,13 @@
-use crate::primitives::{CrossShardMessage, Hash};
+use crate::primitives::{Address, CrossShardMessage, Hash};
+use crate::staking::Validator;
 use std::collections::HashMap;
 
 pub struct BeaconChain {
     finalized_shard_blocks: HashMap<u64, Vec<Hash>>,
     message_queues: HashMap<u64, Vec<CrossShardMessage>>,
+    validators: HashMap<Address, Validator>,
+    active_validators: Vec<Address>,
+    epoch: u64,
 }
 
 impl BeaconChain {
@@ -11,6 +15,9 @@ impl BeaconChain {
         Self {
             finalized_shard_blocks: HashMap::new(),
             message_queues: HashMap::new(),
+            validators: HashMap::new(),
+            active_validators: vec![],
+            epoch: 0,
         }
     }
 
@@ -42,5 +49,19 @@ impl BeaconChain {
             "Beacon Chain: Assigning validators for Shard {} for the next epoch.",
             shard_id
         );
+    }
+
+    pub fn run_election(&mut self) {
+        // This is a simplified election process. A real implementation would use a
+        // Phragmén-like algorithm.
+        let mut sorted_validators: Vec<_> = self.validators.values().collect();
+        sorted_validators.sort_by(|a, b| b.stake.cmp(&a.stake));
+        self.active_validators = sorted_validators
+            .into_iter()
+            .take(10) // Simplified: take top 10 validators
+            .map(|v| v.address)
+            .collect();
+        self.epoch += 1;
+        println!("Epoch {}: New validator set elected: {:?}", self.epoch, self.active_validators);
     }
 }

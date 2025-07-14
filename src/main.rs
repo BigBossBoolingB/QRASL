@@ -2,32 +2,33 @@ use anyhow::{Context, Result};
 use config::Config;
 use crate::beacon_chain::BeaconChain;
 use crate::chain::Chain;
-use crate::miner::mine_block;
 use crate::network::create_swarm;
 use crate::primitives::{Address, Block, CrossShardMessage, Transaction};
+use crate::staking;
 use ed25519_dalek::Keypair;
 use libp2p::gossipsub::IdentTopic as Topic;
 use libp2p::swarm::SwarmEvent;
 use libp2p::Swarm;
 use rand::rngs::OsRng;
+use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::task;
+use tokio::time::{self, Duration};
 
 mod primitives;
 mod chain;
-mod miner;
 mod network;
 mod state;
 mod beacon_chain;
 mod vm;
 mod governance;
+mod staking;
 
 async fn run_shard(
     shard_id: u64,
-    is_miner: bool,
-    difficulty: u32,
+    is_validator: bool,
     beacon_chain: Arc<Mutex<BeaconChain>>,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -39,88 +40,53 @@ async fn run_shard(
 
     // Create some keypairs for simulation
     let mut csprng = OsRng {};
-    let miner_keypair = Keypair::generate(&mut csprng);
-    let listener_keypair = Keypair::generate(&mut csprng);
-    let miner_address: Address = miner_keypair.public.to_bytes();
-    let listener_address: Address = listener_keypair.public.to_bytes();
+    let validator_keypair = Keypair::generate(&mut csprng);
+    let nominator_keypair = Keypair::generate(&mut csprng);
+    let validator_address: Address = validator_keypair.public.to_bytes();
+    let nominator_address: Address = nominator_keypair.public.to_bytes();
 
-    // Give the miner some initial funds in the genesis state
-    chain.db.insert(
-        &bincode::serialize(&miner_address)?,
-        bincode::serialize(&1000u128)?,
-    )?;
+    // Give them some initial funds
+    chain.db.insert(&bincode::serialize(&validator_address)?, bincode::serialize(&1000u128)?)?;
+    chain.db.insert(&bincode::serialize(&nominator_address)?, bincode::serialize(&500u128)?)?;
 
     println!("Shard {}: Simulation Started!", shard_id);
     println!("------------------------------------");
-    println!("Shard {}: Miner Address: {:?}", shard_id, miner_address);
-    println!("Shard {}: Listener Address: {:?}", shard_id, listener_address);
+    println!("Shard {}: Validator Address: {:?}", shard_id, validator_address);
+    println!("Shard {}: Nominator Address: {:?}", shard_id, nominator_address);
     println!("------------------------------------");
 
-    let mut contract_deployed = false;
+    let mut slot = 0;
 
     loop {
-        if is_miner {
-            let last_block_bytes = chain.db.get(b"tip")?.context("Failed to get last block")?;
-            let last_block: Block = bincode::deserialize(&last_block_bytes)?;
-            let mut transactions = vec![];
-            let mut cross_shard_messages_to_send = vec![];
+        let active_validators = beacon_chain.lock().unwrap().active_validators.clone();
+        if is_validator && !active_validators.is_empty() {
+            let current_validator = active_validators[slot % active_validators.len()];
+            if current_validator == validator_address {
+                let last_block_bytes = chain.db.get(b"tip")?.context("Failed to get last block")?;
+                let last_block: Block = bincode::deserialize(&last_block_bytes)?;
+                let transactions = vec![];
+                let cross_shard_messages_to_send = vec![];
 
-            if shard_id == 0 {
-                // On Shard 0, create a cross-shard message to propose something on Shard 1
-                let proposal_message = CrossShardMessage {
-                    source_shard_id: 0,
-                    target_shard_id: 1,
-                    payload: "PROPOSE:Increase block reward".into(),
-                };
-                cross_shard_messages_to_send.push(proposal_message);
-                println!("Shard 0: Sending governance proposal to Shard 1");
-            } else if shard_id == 1 {
-                // On Shard 1, vote on the proposal
-                if let Some(proposal_bytes) = chain.db.get(b"proposals")? {
-                    let proposals: std::collections::HashMap<u64, crate::governance::Proposal> =
-                        bincode::deserialize(&proposal_bytes)?;
-                    if let Some(proposal) = proposals.values().next() {
-                        let mut tx = Transaction {
-                            sender: miner_address,
-                            signature: [0; 64],
-                            recipient: [3; 32], // Governance contract address
-                            value: 0,
-                            payload: format!("VOTE:{}:AYE", proposal.id).into(),
-                            gas_limit: 0,
-                            fees: 0,
-                        };
-                        tx.sign(&miner_keypair);
-                        transactions.push(tx);
-                        println!("Shard 1: Voting on proposal {}", proposal.id);
-                    }
+                let new_block = Block::new(
+                    last_block.header.hash(),
+                    [0; 32],
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs(),
+                    shard_id as u32,
+                    validator_address.to_vec(),
+                    transactions,
+                    cross_shard_messages_to_send,
+                );
+
+                let block_json = serde_json::to_string(&new_block)?;
+                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), block_json.as_bytes()) {
+                    eprintln!("Error publishing block: {:?}", e);
                 }
+
+                let mut beacon_chain_lock = beacon_chain.lock().unwrap();
+                beacon_chain_lock.submit_shard_checkpoint(shard_id, new_block.header.hash());
+                println!("Shard {}: Validator {:?} produced block #{}", shard_id, validator_address, slot);
             }
-
-            // Poll for incoming messages from the Beacon Chain
-            let incoming_messages = beacon_chain.lock().unwrap().get_messages_for_shard(shard_id);
-
-            println!("Shard {}: Mining new block...", shard_id);
-            let new_block = mine_block(
-                &last_block,
-                transactions,
-                incoming_messages,
-                difficulty,
-            );
-            let block_json = serde_json::to_string(&new_block)?;
-
-            if let Err(e) = swarm
-                .behaviour_mut()
-                .gossipsub
-                .publish(topic.clone(), block_json.as_bytes())
-            {
-                eprintln!("Error publishing block: {:?}", e);
-            }
-
-            let mut beacon_chain_lock = beacon_chain.lock().unwrap();
-            beacon_chain_lock.submit_shard_checkpoint(shard_id, new_block.header.hash());
-            for msg in cross_shard_messages_to_send {
-                beacon_chain_lock.submit_cross_shard_message(msg);
-            }
+            slot += 1;
         }
 
         tokio::select! {
@@ -149,30 +115,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .add_source(config::File::with_name("config"))
         .build()?;
 
-    let is_miner = settings.get_bool("node.is_miner")?;
-    let shard_id = settings.get_int("node.shard_id")? as u64;
-    let difficulty = settings.get_int("network.difficulty")? as u32;
+    let is_validator_node = settings.get_bool("node.is_validator").unwrap_or(false);
+    let shard_id = settings.get_int("node.shard_id").unwrap_or(0) as u64;
+
+    // Simulate staking
+    let mut csprng = OsRng {};
+    let validator1_keypair = Keypair::generate(&mut csprng);
+    let validator2_keypair = Keypair::generate(&mut csprng);
+    let nominator1_keypair = Keypair::generate(&mut csprng);
+    let validator1_address = validator1_keypair.public.to_bytes();
+    let validator2_address = validator2_keypair.public.to_bytes();
+    let nominator1_address = nominator1_keypair.public.to_bytes();
+
+    {
+        let mut bc_lock = beacon_chain.lock().unwrap();
+        staking::stake(&mut bc_lock.validators, validator1_address, 100);
+        staking::stake(&mut bc_lock.validators, validator2_address, 150);
+        staking::nominate(&mut bc_lock.validators, nominator1_address, validator2_address, 50);
+    }
+
+    let beacon_chain_clone = beacon_chain.clone();
+    task::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            beacon_chain_clone.lock().unwrap().run_election();
+        }
+    });
 
     if shard_id == 0 {
         let beacon_chain_clone = beacon_chain.clone();
         task::spawn(async move {
-            if let Err(e) = run_shard(0, is_miner, difficulty, beacon_chain_clone).await {
+            if let Err(e) = run_shard(0, is_validator_node, beacon_chain_clone).await {
                 eprintln!("Shard 0 failed: {}", e);
-            }
-        });
-    }
-
-    if shard_id == 1 {
-        let beacon_chain_clone = beacon_chain.clone();
-        task::spawn(async move {
-            if let Err(e) = run_shard(1, is_miner, difficulty, beacon_chain_clone).await {
-                eprintln!("Shard 1 failed: {}", e);
             }
         });
     }
 
     // Keep the main thread alive
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
