@@ -6,16 +6,18 @@ pub struct Chain {
     pub blocks: Vec<Block>,
     pub block_hashes: HashMap<[u8; 32], usize>,
     pub state_machine: StateMachine,
+    pub shard_id: u64,
 }
 
 impl Chain {
-    pub fn new() -> Self {
+    pub fn new(shard_id: u64) -> Self {
         let genesis_block = Block::new(
             [0; 32],
             [0; 32],
             0,
-            0,
+            shard_id as u32,
             vec![0],
+            vec![],
             vec![],
         );
         let mut block_hashes = HashMap::new();
@@ -25,6 +27,7 @@ impl Chain {
             blocks: vec![genesis_block],
             block_hashes,
             state_machine: StateMachine::new(),
+            shard_id,
         }
     }
 
@@ -35,7 +38,13 @@ impl Chain {
         }
 
         for tx in &block.transactions {
-            self.state_machine.process_transaction(tx)?;
+            // This is a simplified check. A real implementation would use a more robust
+            // transaction typing system.
+            if self.shard_id == 1 && (String::from_utf8_lossy(&tx.payload).starts_with("PROPOSE") || String::from_utf8_lossy(&tx.payload).starts_with("VOTE")) {
+                self.state_machine.process_governance_tx(tx, self.shard_id)?;
+            } else {
+                self.state_machine.process_transaction(tx)?;
+            }
         }
 
         for msg in &block.cross_shard_messages {

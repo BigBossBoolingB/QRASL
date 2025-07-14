@@ -21,6 +21,7 @@ mod network;
 mod state;
 mod beacon_chain;
 mod vm;
+mod governance;
 
 async fn run_shard(
     shard_id: u64,
@@ -32,7 +33,7 @@ async fn run_shard(
 
     let topic = Topic::new(format!("shard-{}-new-blocks", shard_id));
 
-    let mut chain = Chain::new();
+    let mut chain = Chain::new(shard_id);
     let difficulty = 12;
 
     // Create some keypairs for simulation
@@ -61,34 +62,31 @@ async fn run_shard(
             let mut transactions = vec![];
             let mut cross_shard_messages_to_send = vec![];
 
-            // Deploy the counter contract
-            if !contract_deployed {
-                let contract_code = fs::read("contracts/counter_contract.wasm")?;
-                let mut tx = Transaction {
-                    sender: miner_address,
-                    signature: [0; 64],
-                    recipient: [2; 32], // Contract address
-                    value: 0,
-                    payload: contract_code,
-                    gas_limit: 0,
-                    fees: 0,
+            if shard_id == 0 {
+                // On Shard 0, create a cross-shard message to propose something on Shard 1
+                let proposal_message = CrossShardMessage {
+                    source_shard_id: 0,
+                    target_shard_id: 1,
+                    payload: "PROPOSE:Increase block reward".into(),
                 };
-                tx.sign(&miner_keypair);
-                transactions.push(tx);
-                contract_deployed = true;
-            } else {
-                // Call the counter contract
-                let mut tx = Transaction {
-                    sender: miner_address,
-                    signature: [0; 64],
-                    recipient: [2; 32], // Contract address
-                    value: 0,
-                    payload: vec![], // No payload for increment
-                    gas_limit: 0,
-                    fees: 0,
-                };
-                tx.sign(&miner_keypair);
-                transactions.push(tx);
+                cross_shard_messages_to_send.push(proposal_message);
+                println!("Shard 0: Sending governance proposal to Shard 1");
+            } else if shard_id == 1 {
+                // On Shard 1, vote on the proposal
+                if let Some(proposal) = chain.state_machine.proposals.values().next() {
+                    let mut tx = Transaction {
+                        sender: miner_address,
+                        signature: [0; 64],
+                        recipient: [3; 32], // Governance contract address
+                        value: 0,
+                        payload: format!("VOTE:{}:AYE", proposal.id).into(),
+                        gas_limit: 0,
+                        fees: 0,
+                    };
+                    tx.sign(&miner_keypair);
+                    transactions.push(tx);
+                    println!("Shard 1: Voting on proposal {}", proposal.id);
+                }
             }
 
             // Poll for incoming messages from the Beacon Chain
@@ -128,6 +126,7 @@ async fn run_shard(
                         println!("  Hash: {:?}", new_block_header.hash());
                         println!("  Balances: {:?}", chain.state_machine.balances);
                         println!("  Contract Storage: {:?}", chain.state_machine.contract_storage);
+                        println!("  Proposals: {:?}", chain.state_machine.proposals);
                         println!("------------------------------------");
                     }
                     Err(e) => {
