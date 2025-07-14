@@ -7,7 +7,7 @@ pub struct BeaconChain {
     message_queues: HashMap<u64, Vec<CrossShardMessage>>,
     validators: HashMap<Address, Validator>,
     active_validators: Vec<Address>,
-    epoch: u64,
+    pub epoch: u64,
 }
 
 impl BeaconChain {
@@ -55,7 +55,11 @@ impl BeaconChain {
         // This is a simplified election process. A real implementation would use a
         // Phragmén-like algorithm.
         let mut sorted_validators: Vec<_> = self.validators.values().collect();
-        sorted_validators.sort_by(|a, b| b.stake.cmp(&a.stake));
+        sorted_validators.sort_by(|a, b| {
+            let a_total_stake = a.stake + a.nominators.iter().map(|n| n.stake).sum::<u128>();
+            let b_total_stake = b.stake + b.nominators.iter().map(|n| n.stake).sum::<u128>();
+            b_total_stake.cmp(&a_total_stake)
+        });
         self.active_validators = sorted_validators
             .into_iter()
             .take(10) // Simplified: take top 10 validators

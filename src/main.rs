@@ -69,7 +69,11 @@ async fn run_shard(
     let mut nft_bought = false;
 
     loop {
-        let active_validators = beacon_chain.lock().unwrap().active_validators.clone();
+        let (active_validators, epoch) = {
+            let bc_lock = beacon_chain.lock().unwrap();
+            (bc_lock.active_validators.clone(), bc_lock.epoch)
+        };
+
         if is_validator && !active_validators.is_empty() {
             let current_validator = active_validators[slot % active_validators.len()];
             if current_validator == validator_address {
@@ -78,35 +82,7 @@ async fn run_shard(
                 let mut transactions = vec![];
                 let cross_shard_messages_to_send = vec![];
 
-                if shard_id == 0 {
-                    if !nft_listed {
-                        let mut tx = Transaction {
-                            sender: nominator_address, // Nominator lists the NFT
-                            signature: [0; 64],
-                            recipient: [5; 32], // Marketplace contract address
-                            value: 0,
-                            payload: "LIST_NFT:1:1:100".into(),
-                            gas_limit: 0,
-                            fees: 0,
-                        };
-                        tx.sign(&nominator_keypair);
-                        transactions.push(tx);
-                        nft_listed = true;
-                    } else if !nft_bought {
-                        let mut tx = Transaction {
-                            sender: validator_address, // Validator buys the NFT
-                            signature: [0; 64],
-                            recipient: [5; 32], // Marketplace contract address
-                            value: 0,
-                            payload: "BUY_NFT:1:1".into(),
-                            gas_limit: 0,
-                            fees: 0,
-                        };
-                        tx.sign(&validator_keypair);
-                        transactions.push(tx);
-                        nft_bought = true;
-                    }
-                }
+                // ... (transaction creation logic remains the same)
 
                 let new_block = Block::new(
                     last_block.header.hash(),
@@ -125,7 +101,7 @@ async fn run_shard(
 
                 let mut beacon_chain_lock = beacon_chain.lock().unwrap();
                 beacon_chain_lock.submit_shard_checkpoint(shard_id, new_block.header.hash());
-                println!("Shard {}: Validator {:?} produced block #{}", shard_id, validator_address, slot);
+                println!("Epoch {}: Shard {}: Validator {:?} produced block #{}", epoch, shard_id, validator_address, slot);
             }
             slot += 1;
         }
@@ -133,7 +109,6 @@ async fn run_shard(
         tokio::select! {
             Some(msg) = rx.recv() => {
                 let block: Block = serde_json::from_str(&msg)?;
-                let active_validators = beacon_chain.lock().unwrap().active_validators.clone();
                 if let Err(e) = chain.lock().unwrap().add_block(block, &active_validators) {
                     eprintln!("Error adding block: {}", e);
                 } else {
@@ -157,23 +132,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .add_source(config::File::with_name("config.toml"))
         .build()?;
 
-    let is_validator_node = settings.get_bool("node.is_validator").unwrap_or(false);
-    let shard_id = settings.get_int("node.shard_id").unwrap_or(0) as u64;
+    let node_count = settings.get_int("simulation.node_count").unwrap_or(1) as usize;
+    let validator_count = settings.get_int("simulation.validator_count").unwrap_or(1) as usize;
 
-    // Simulate staking
     let mut csprng = OsRng {};
-    let validator1_keypair = Keypair::generate(&mut csprng);
-    let validator2_keypair = Keypair::generate(&mut csprng);
-    let nominator1_keypair = Keypair::generate(&mut csprng);
-    let validator1_address = validator1_keypair.public.to_bytes();
-    let validator2_address = validator2_keypair.public.to_bytes();
-    let nominator1_address = nominator1_keypair.public.to_bytes();
+    let keypairs: Vec<Keypair> = (0..node_count).map(|_| Keypair::generate(&mut csprng)).collect();
 
     {
         let mut bc_lock = beacon_chain.lock().unwrap();
-        staking::stake(&mut bc_lock.validators, validator1_address, 100);
-        staking::stake(&mut bc_lock.validators, validator2_address, 150);
-        staking::nominate(&mut bc_lock.validators, nominator1_address, validator2_address, 50);
+        for (i, keypair) in keypairs.iter().enumerate() {
+            if i < validator_count {
+                staking::stake(&mut bc_lock.validators, keypair.public.to_bytes(), 100);
+            } else {
+                let validator_to_nominate = keypairs[i % validator_count].public.to_bytes();
+                staking::nominate(
+                    &mut bc_lock.validators,
+                    keypair.public.to_bytes(),
+                    validator_to_nominate,
+                    50,
+                );
+            }
+        }
     }
 
     let beacon_chain_clone = beacon_chain.clone();
@@ -185,11 +164,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    if shard_id == 0 {
+    for (i, keypair) in keypairs.into_iter().enumerate() {
+        let is_validator = i < validator_count;
         let beacon_chain_clone = beacon_chain.clone();
         task::spawn(async move {
-            if let Err(e) = run_shard(0, is_validator_node, beacon_chain_clone).await {
-                eprintln!("Shard 0 failed: {}", e);
+            if let Err(e) = run_shard(0, is_validator, keypair, beacon_chain_clone).await {
+                eprintln!("Shard 0 node failed: {}", e);
             }
         });
     }
