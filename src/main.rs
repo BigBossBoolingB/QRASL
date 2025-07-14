@@ -1,10 +1,12 @@
 use crate::chain::Chain;
 use crate::miner::mine_block;
 use crate::network::create_swarm;
-use crate::primitives::{Block, Transaction};
+use crate::primitives::{Address, Block, Transaction};
+use ed25519_dalek::Keypair;
 use libp2p::gossipsub::IdentTopic as Topic;
 use libp2p::swarm::SwarmEvent;
 use libp2p::Swarm;
+use rand::rngs::OsRng;
 use std::error::Error;
 use tokio::sync::mpsc;
 
@@ -12,6 +14,7 @@ mod primitives;
 mod chain;
 mod miner;
 mod network;
+mod state;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -23,9 +26,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut chain = Chain::new();
     let difficulty = 12;
 
+    // Create some keypairs for simulation
+    let mut csprng = OsRng {};
+    let miner_keypair = Keypair::generate(&mut csprng);
+    let listener_keypair = Keypair::generate(&mut csprng);
+    let miner_address: Address = miner_keypair.public.to_bytes();
+    let listener_address: Address = listener_keypair.public.to_bytes();
+
+    // Give the miner some initial funds in the genesis state
+    chain.state_machine.balances.insert(miner_address, 1000);
+
     println!("QRASL Blockchain Simulation Started!");
     println!("------------------------------------");
+    println!("Miner Address: {:?}", miner_address);
+    println!("Listener Address: {:?}", listener_address);
     println!("Genesis Block: {:?}", chain.blocks[0].header.hash());
+    println!("Initial Balances: {:?}", chain.state_machine.balances);
     println!("------------------------------------");
 
     let mut is_miner = false;
@@ -38,15 +54,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         if is_miner {
             let last_block = chain.blocks.last().unwrap();
-            let transactions = vec![Transaction {
-                sender: [0; 32],
+            let mut tx = Transaction {
+                sender: miner_address,
                 signature: [0; 64],
-                recipient: [1; 32],
+                recipient: listener_address,
                 value: 10,
                 payload: vec![],
                 gas_limit: 0,
                 fees: 0,
-            }];
+            };
+            tx.sign(&miner_keypair);
+            let transactions = vec![tx];
 
             println!("Mining new block...");
             let new_block = mine_block(last_block, transactions, difficulty);
@@ -69,8 +87,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let new_block_header = chain.blocks.last().unwrap().header.clone();
                         println!("Block #{} Added!", chain.blocks.len() - 1);
                         println!("  Hash: {:?}", new_block_header.hash());
-                        println!("  Parent Hash: {:?}", new_block_header.parent_hash);
-                        println!("  Nonce: {:?}", String::from_utf8_lossy(&new_block_header.nonce));
+                        println!("  Balances: {:?}", chain.state_machine.balances);
                         println!("------------------------------------");
                     }
                     Err(e) => {

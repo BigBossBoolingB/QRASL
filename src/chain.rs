@@ -1,9 +1,11 @@
 use crate::primitives::{Block, BlockHeader, Transaction};
+use crate::state::StateMachine;
 use std::collections::HashMap;
 
 pub struct Chain {
     pub blocks: Vec<Block>,
     pub block_hashes: HashMap<[u8; 32], usize>,
+    pub state_machine: StateMachine,
 }
 
 impl Chain {
@@ -22,6 +24,7 @@ impl Chain {
         Self {
             blocks: vec![genesis_block],
             block_hashes,
+            state_machine: StateMachine::new(),
         }
     }
 
@@ -31,7 +34,9 @@ impl Chain {
             return Err("Block's parent hash does not match the last block's hash");
         }
 
-        // Placeholder for consensus rule is now handled in the miner
+        for tx in &block.transactions {
+            self.state_machine.process_transaction(tx)?;
+        }
 
         self.block_hashes.insert(block.header.hash(), self.blocks.len());
         self.blocks.push(block);
