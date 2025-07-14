@@ -1,130 +1,111 @@
-use anyhow::{Context, Result};
-use config::Config;
-use crate::beacon_chain::BeaconChain;
-use crate::chain::Chain;
-use crate::mempool::Mempool;
-use crate::network::create_swarm;
-use crate::primitives::{Address, Block, CrossShardMessage, Transaction};
-use crate::rpc;
-use crate::staking;
-use ed25519_dalek::Keypair;
-use libp2p::gossipsub::IdentTopic as Topic;
-use libp2p::swarm::SwarmEvent;
-use libp2p::Swarm;
-use rand::rngs::OsRng;
+use anyhow::Result;
 use std::collections::HashMap;
-use std::fs;
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
-use tokio::task;
-use tokio::time::{self, Duration};
+use std::time::Duration;
+use tokio::time::sleep;
 
-mod primitives;
-mod chain;
-mod network;
-mod state;
+// --- Module Imports ---
 mod beacon_chain;
-mod vm;
+mod chain;
 mod governance;
-mod staking;
+mod mempool;
+mod network;
 mod nft;
 mod marketplace;
+mod primitives;
 mod rpc;
-mod mempool;
+mod staking;
+mod state;
+mod vm;
+
+// --- Crate Imports ---
+use crate::beacon_chain::BeaconChain;
+use crate::chain::Chain;
+use crate::primitives::{Block, Transaction, Nft, NftCollection, Listing, CrossShardMessage, Proposal, Vote};
+use crate::state::StateMachine;
+use crate::network::{Node, Event};
+use crate::staking::{Validator, Nominator};
+
+// --- Main Simulation Logic ---
 
 async fn run_shard(
     shard_id: u64,
-    is_validator: bool,
+    mut node: Node,
+    state_machine: Arc<Mutex<StateMachine>>,
+    chain: Arc<Mutex<Chain>>,
     beacon_chain: Arc<Mutex<BeaconChain>>,
+    keypair: primitives::Keypair, // Each node/shard runner needs its own identity
 ) -> Result<()> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut swarm = create_swarm(tx).await?;
-
-    let topic = Topic::new(format!("shard-{}-new-blocks", shard_id));
-
-    let chain = Arc::new(Mutex::new(Chain::new(shard_id)?));
-
-    // Create some keypairs for simulation
-    let mut csprng = OsRng {};
-    let validator_keypair = Keypair::generate(&mut csprng);
-    let nominator_keypair = Keypair::generate(&mut csprng);
-    let validator_address: Address = validator_keypair.public.to_bytes();
-    let nominator_address: Address = nominator_keypair.public.to_bytes();
-
-    // Give them some initial funds
-    chain.lock().unwrap().db.insert(&bincode::serialize(&validator_address)?, bincode::serialize(&1000u128)?)?;
-    chain.lock().unwrap().db.insert(&bincode::serialize(&nominator_address)?, bincode::serialize(&500u128)?)?;
-
-    let rpc_chain = chain.clone();
-    task::spawn(async move {
-        rpc::run_rpc_server(rpc_chain).await.unwrap();
-    });
-
-    println!("Shard {}: Simulation Started!", shard_id);
-    println!("------------------------------------");
-    println!("Shard {}: Validator Address: {:?}", shard_id, validator_address);
-    println!("Shard {}: Nominator Address: {:?}", shard_id, nominator_address);
-    println!("------------------------------------");
-
-    let mut slot = 0;
-    let mut nft_listed = false;
-    let mut nft_bought = false;
+    println!("[Shard {}] Node starting up with PeerId: {}", shard_id, node.peer_id);
 
     loop {
-        let (active_validators, epoch) = {
-            let bc_lock = beacon_chain.lock().unwrap();
-            (bc_lock.active_validators.clone(), bc_lock.epoch)
-        };
-
-        if is_validator && !active_validators.is_empty() {
-            let current_validator = active_validators[slot % active_validators.len()];
-            if current_validator == validator_address {
-                let last_block_bytes = chain.db.get(b"tip")?.context("Failed to get last block")?;
-                let last_block: Block = bincode::deserialize(&last_block_bytes)?;
-                let transactions = mempool.lock().unwrap().get_transactions();
-                let cross_shard_messages_to_send = vec![];
-
-                let new_block = Block::new(
-                    last_block.header.hash(),
-                    [0; 32],
-                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs(),
-                    shard_id as u32,
-                    validator_address.to_vec(),
-                    transactions,
-                    cross_shard_messages_to_send,
-                );
-
-                let block_json = serde_json::to_string(&new_block)?;
-                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), block_json.as_bytes()) {
-                    eprintln!("Error publishing block: {:?}", e);
-                }
-
-                let mut beacon_chain_lock = beacon_chain.lock().unwrap();
-                beacon_chain_lock.submit_shard_checkpoint(shard_id, new_block.header.hash());
-                println!("Epoch {}: Shard {}: Validator {:?} produced block #{}", epoch, shard_id, validator_address, slot);
-            }
-            slot += 1;
-        }
-
         tokio::select! {
-            Some(msg) = block_rx.recv() => {
-                let block: Block = serde_json::from_str(&msg)?;
-                if let Err(e) = chain.lock().unwrap().add_block(block, &active_validators) {
-                    eprintln!("Error adding block: {}", e);
-                } else {
-                    mempool.lock().unwrap().clear();
-                    println!("------------------------------------");
+            // Handle incoming network events
+            event = node.next_event() => {
+                if let Some(event) = event {
+                    match event {
+                        Event::Block(block) => {
+                            let mut chain_lock = chain.lock().unwrap();
+                            let mut sm_lock = state_machine.lock().unwrap();
+                            println!("[Shard {}] Received new block via gossip: {}", shard_id, block.header.height);
+                            if chain_lock.add_block(block, &mut sm_lock).is_ok() {
+                                println!("[Shard {}] Successfully added gossiped block to chain.", shard_id);
+                            } else {
+                                eprintln!("[Shard {}] Failed to add gossiped block to chain.", shard_id);
+                            }
+                        },
+                        // Handle other event types like transactions, etc.
+                        _ => {}
+                    }
                 }
-            }
-            Some(msg) = tx_rx.recv() => {
-                let tx: Transaction = serde_json::from_str(&msg)?;
-                if let Err(e) = mempool.lock().unwrap().add_transaction(tx) {
-                    eprintln!("Error adding transaction to mempool: {}", e);
-                }
-            }
-            event = swarm.select_next_some() => {
-                if let SwarmEvent::NewListenAddr { address, .. } = event {
-                    println!("Shard {}: Listening on {}", shard_id, address);
+            },
+            // Block production logic for elected validators
+            _ = sleep(Duration::from_secs(5)) => {
+                let is_our_turn = {
+                    let bc_lock = beacon_chain.lock().unwrap();
+                    bc_lock.is_validator_turn(shard_id, &keypair.public)
+                };
+
+                if is_our_turn {
+                    println!("\n[Shard {}] It's our turn to produce a block!", shard_id);
+                    let mut chain_lock = chain.lock().unwrap();
+                    let mut sm_lock = state_machine.lock().unwrap();
+
+                    let last_block = chain_lock.get_last_block().unwrap().unwrap(); // Should exist after genesis
+
+                    // --- CREATE MEANINGFUL TRANSACTIONS ---
+                    let mut transactions = Vec::new();
+
+                    // ** THE FIRST CITIZEN: DID DEPLOYMENT & CREATION **
+                    // On the first turn of the first validator of the governance shard, deploy the DID contract.
+                    if shard_id == 1 && last_block.header.height == 0 {
+                        println!("[Shard 1] Deploying DID Registry Contract...");
+                        let contract_bytes = std::fs::read("./contracts/did_registry_contract.wasm")?;
+                        let deploy_tx = Transaction::new_contract_deploy(keypair.public, contract_bytes);
+                        transactions.push(deploy_tx);
+                    }
+                    // In a subsequent block, create a DID for one of the Shard 0 nodes.
+                    else if shard_id == 1 && last_block.header.height == 1 {
+                        println!("[Shard 1] Creating first DID...");
+                        // This is a simplified payload. A real one would be more complex.
+                        let did_payload = b"create_did:did:qrasl:1:node_shard_0".to_vec();
+                        let call_tx = Transaction::new_contract_call(keypair.public, state::DID_REGISTRY_ADDRESS.into(), did_payload);
+                        transactions.push(call_tx);
+                    }
+
+
+                    let new_block = Block::new(transactions, last_block.header.hash()?);
+
+                    if chain_lock.add_block(new_block.clone(), &mut sm_lock).is_ok() {
+                        println!("[Shard {}] Successfully produced and added new block: {}", shard_id, new_block.header.height);
+                        node.gossip_block(new_block.clone()).await?;
+
+                        // Submit checkpoint to Beacon Chain
+                        let mut bc_lock = beacon_chain.lock().unwrap();
+                        bc_lock.submit_shard_checkpoint(shard_id, new_block.header.hash()?);
+                    } else {
+                        eprintln!("[Shard {}] Produced a block that was rejected by our own chain.", shard_id);
+                    }
                 }
             }
         }
@@ -132,91 +113,59 @@ async fn run_shard(
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<()> {
+    // --- Initialization ---
     let beacon_chain = Arc::new(Mutex::new(BeaconChain::new()));
 
-    let settings = Config::builder()
-        .add_source(config::File::with_name("config.toml"))
-        .build()?;
+    // Create identities for our nodes
+    let node_keys: Vec<_> = (0..3).map(|_| primitives::Keypair::new()).collect();
+    let node_pubkeys: Vec<_> = node_keys.iter().map(|k| k.public).collect();
 
-    let node_count = settings.get_int("simulation.node_count").unwrap_or(1) as usize;
-    let validator_count = settings.get_int("simulation.validator_count").unwrap_or(1) as usize;
-
-    let mut csprng = OsRng {};
-    let keypairs: Vec<Keypair> = (0..node_count).map(|_| Keypair::generate(&mut csprng)).collect();
-
+    // Setup initial staking and nominations
     {
         let mut bc_lock = beacon_chain.lock().unwrap();
-        for (i, keypair) in keypairs.iter().enumerate() {
-            if i < validator_count {
-                staking::stake(&mut bc_lock.validators, keypair.public.to_bytes(), 100);
-            } else {
-                let validator_to_nominate = keypairs[i % validator_count].public.to_bytes();
-                staking::nominate(
-                    &mut bc_lock.validators,
-                    keypair.public.to_bytes(),
-                    validator_to_nominate,
-                    50,
-                );
-            }
+        // Node 0 and 1 stake to become validators
+        bc_lock.staking_system.stake(node_pubkeys[0], 1000);
+        bc_lock.staking_system.stake(node_pubkeys[1], 1000);
+        // Node 2 nominates Node 0
+        bc_lock.staking_system.nominate(node_pubkeys[2], node_pubkeys[0], 500);
+    }
+
+    // --- Launch Shards ---
+    for i in 0..2 { // Launching Shard 0 and Shard 1
+        let db_path = format!("./db/shard_{}", i);
+        let db = Arc::new(sled::open(db_path)?);
+
+        let state_machine = Arc::new(Mutex::new(StateMachine::new(db.clone())));
+        let chain = Arc::new(Mutex::new(Chain::new(db.clone())?));
+
+        println!("Launching nodes for Shard {}...", i);
+        for (j, keypair) in node_keys.iter().enumerate() {
+            let node = Node::new().await?;
+            let sm_clone = state_machine.clone();
+            let chain_clone = chain.clone();
+            let bc_clone = beacon_chain.clone();
+            let keypair_clone = keypair.clone();
+
+            println!("[Shard {}] Node {} starting...", i, j);
+            tokio::spawn(async move {
+                if let Err(e) = run_shard(i, node, sm_clone, chain_clone, bc_clone, keypair_clone).await {
+                    eprintln!("[Shard {}] Node {} crashed: {}", i, j, e);
+                }
+            });
         }
     }
 
-    let beacon_chain_clone = beacon_chain.clone();
-    task::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(10));
-        loop {
-            interval.tick().await;
-            beacon_chain_clone.lock().unwrap().run_election();
-        }
-    });
-
-    for (i, keypair) in keypairs.into_iter().enumerate() {
-        let is_validator = i < validator_count;
-        let beacon_chain_clone = beacon_chain.clone();
-        task::spawn(async move {
-            if let Err(e) = run_shard(0, is_validator, keypair, beacon_chain_clone).await {
-                eprintln!("Shard 0 node failed: {}", e);
-            }
-        });
-    }
-
-    // External citizen simulation
-    task::spawn(async move {
-        let client = Client::new();
-        let mut csprng = OsRng {};
-        let keypair = Keypair::generate(&mut csprng);
-        let address = keypair.public.to_bytes();
-
-        loop {
-            time::sleep(Duration::from_secs(5)).await;
-            let mut tx = Transaction {
-                sender: address,
-                signature: [0; 64],
-                recipient: [0; 32],
-                value: 1,
-                payload: vec![],
-                gas_limit: 0,
-                fees: 0,
-            };
-            tx.sign(&keypair);
-
-            let res = client
-                .post("http://127.0.0.1:9933")
-                .json(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "qrasl_submitTransaction",
-                    "params": [tx],
-                    "id": 1,
-                }))
-                .send()
-                .await;
-            println!("External citizen submitted transaction: {:?}", res);
-        }
-    });
-
-    // Keep the main thread alive
+    // --- Beacon Chain Main Loop ---
+    let mut interval = tokio::time::interval(Duration::from_secs(15));
     loop {
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        interval.tick().await;
+        let mut bc_lock = beacon_chain.lock().unwrap();
+
+        // Run election cycle
+        println!("\n[BeaconChain] Epoch ended. Running election cycle...");
+        bc_lock.run_election();
+        let active_set = bc_lock.get_active_validators();
+        println!("[BeaconChain] New Active Validator Set: {:?}", active_set.iter().map(|v| hex::encode(v.id)).collect::<Vec<_>>());
     }
 }
