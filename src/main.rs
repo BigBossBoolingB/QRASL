@@ -4,6 +4,7 @@ use crate::beacon_chain::BeaconChain;
 use crate::chain::Chain;
 use crate::network::create_swarm;
 use crate::primitives::{Address, Block, CrossShardMessage, Transaction};
+use crate::rpc;
 use crate::staking;
 use ed25519_dalek::Keypair;
 use libp2p::gossipsub::IdentTopic as Topic;
@@ -27,6 +28,7 @@ mod governance;
 mod staking;
 mod nft;
 mod marketplace;
+mod rpc;
 
 async fn run_shard(
     shard_id: u64,
@@ -38,7 +40,7 @@ async fn run_shard(
 
     let topic = Topic::new(format!("shard-{}-new-blocks", shard_id));
 
-    let mut chain = Chain::new(shard_id)?;
+    let chain = Arc::new(Mutex::new(Chain::new(shard_id)?));
 
     // Create some keypairs for simulation
     let mut csprng = OsRng {};
@@ -48,8 +50,13 @@ async fn run_shard(
     let nominator_address: Address = nominator_keypair.public.to_bytes();
 
     // Give them some initial funds
-    chain.db.insert(&bincode::serialize(&validator_address)?, bincode::serialize(&1000u128)?)?;
-    chain.db.insert(&bincode::serialize(&nominator_address)?, bincode::serialize(&500u128)?)?;
+    chain.lock().unwrap().db.insert(&bincode::serialize(&validator_address)?, bincode::serialize(&1000u128)?)?;
+    chain.lock().unwrap().db.insert(&bincode::serialize(&nominator_address)?, bincode::serialize(&500u128)?)?;
+
+    let rpc_chain = chain.clone();
+    task::spawn(async move {
+        rpc::run_rpc_server(rpc_chain).await.unwrap();
+    });
 
     println!("Shard {}: Simulation Started!", shard_id);
     println!("------------------------------------");
@@ -127,7 +134,7 @@ async fn run_shard(
             Some(msg) = rx.recv() => {
                 let block: Block = serde_json::from_str(&msg)?;
                 let active_validators = beacon_chain.lock().unwrap().active_validators.clone();
-                if let Err(e) = chain.add_block(block, &active_validators) {
+                if let Err(e) = chain.lock().unwrap().add_block(block, &active_validators) {
                     eprintln!("Error adding block: {}", e);
                 } else {
                     println!("------------------------------------");
