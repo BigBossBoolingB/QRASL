@@ -1,3 +1,4 @@
+use crate::beacon_chain::BeaconChain;
 use crate::chain::Chain;
 use crate::miner::mine_block;
 use crate::network::create_swarm;
@@ -8,6 +9,7 @@ use libp2p::swarm::SwarmEvent;
 use libp2p::Swarm;
 use rand::rngs::OsRng;
 use std::error::Error;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 mod primitives;
@@ -15,9 +17,12 @@ mod chain;
 mod miner;
 mod network;
 mod state;
+mod beacon_chain;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let beacon_chain = Arc::new(Mutex::new(BeaconChain::new()));
+
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut swarm = create_swarm(tx).await?;
 
@@ -51,6 +56,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    let beacon_chain_clone = beacon_chain.clone();
+
     loop {
         if is_miner {
             let last_block = chain.blocks.last().unwrap();
@@ -66,7 +73,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             tx.sign(&miner_keypair);
             let transactions = vec![tx];
 
-            println!("Mining new block...");
+            println!("Shard 0: Mining new block...");
             let new_block = mine_block(last_block, transactions, difficulty);
             let block_json = serde_json::to_string(&new_block).unwrap();
 
@@ -77,6 +84,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             {
                 eprintln!("Error publishing block: {:?}", e);
             }
+
+            let mut beacon_chain_lock = beacon_chain_clone.lock().unwrap();
+            beacon_chain_lock.submit_shard_checkpoint(0, new_block.header.hash());
         }
 
         tokio::select! {
@@ -85,7 +95,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 match chain.add_block(block) {
                     Ok(_) => {
                         let new_block_header = chain.blocks.last().unwrap().header.clone();
-                        println!("Block #{} Added!", chain.blocks.len() - 1);
+                        println!("Shard 0: Block #{} Added!", chain.blocks.len() - 1);
                         println!("  Hash: {:?}", new_block_header.hash());
                         println!("  Balances: {:?}", chain.state_machine.balances);
                         println!("------------------------------------");
