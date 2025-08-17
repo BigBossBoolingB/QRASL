@@ -1,0 +1,15 @@
+[package]
+name = "qrasl_node"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jules, AI Software Engineer"]
+description = "Core node software for the QRASL blockchain."
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# Dependencies will be added here as the project develops.
+# For example:
+# tokio = { version = "1", features = ["full"] }
+# serde = { version = "1.0", features = ["derive"] }
+# crypto-lib = { path = "../crypto" }
