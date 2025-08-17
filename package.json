@@ -1,0 +1,16 @@
+{
+  "name": "chronos-qrasl-contracts",
+  "version": "1.0.0",
+  "description": "Smart contracts for the Chronos/QRASL project",
+  "main": "index.js",
+  "scripts": {
+    "test": "hardhat test"
+  },
+  "author": "Jules, AI Software Engineer",
+  "license": "AGPL-3.0-only",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.5"
+  },
+  "type": "module"
+}
