@@ -1,0 +1,13 @@
+{
+    "q_id": "QmSoH5t7r9F23q4P...nEaY",
+    "s_state": "0000000000000000000000000000000000000000000000000000000000000001",
+    "v_log": [
+        {
+            "v": "0.1.0",
+            "tx": "genesis",
+            "action": "create",
+            "agent": "PPMK"
+        }
+    ],
+    "data_hash": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+}
