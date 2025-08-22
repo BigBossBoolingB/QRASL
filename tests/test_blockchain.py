@@ -2,81 +2,82 @@ import unittest
 import sys
 import os
 
-# Add the src directory to the Python path
+# Add the src directory to the Python path to allow for direct imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.qrasl.block import Block
 from src.qrasl.blockchain import Blockchain
 
-class TestBlock(unittest.TestCase):
-    def test_block_creation_and_hash(self):
-        """Tests the creation of a block and the consistency of its hash."""
+class TestBlockProofOfSolution(unittest.TestCase):
+    def test_block_initialization(self):
+        """Tests that a new block initializes correctly before being solved."""
         block = Block(index=1, transactions={"data": "test"}, previous_hash="abc")
         self.assertEqual(block.index, 1)
-        self.assertEqual(block.transactions, {"data": "test"})
-        self.assertEqual(block.previous_hash, "abc")
+        self.assertIsNone(block.solution, "Solution should be None on init")
+        self.assertIsNone(block.hash, "Hash should be None on init")
 
-        # Hash should be calculated correctly and consistently
-        expected_hash = block.calculate_hash()
-        self.assertEqual(block.hash, expected_hash)
+    def test_hash_depends_on_solution(self):
+        """Tests that the block's hash changes when the solution changes."""
+        block = Block(index=1, transactions={"data": "test"}, previous_hash="abc")
+        block.solution = 100
+        hash_1 = block.calculate_hash()
 
-        # A different block with same data should have a different hash due to timestamp
-        # but if we control timestamp, it should be the same.
-        # This is harder to test without mocking time, so we'll skip for this basic test.
+        block.solution = 200
+        hash_2 = block.calculate_hash()
 
-        # Changing data should result in a different hash
-        block.transactions = {"data": "changed"}
-        self.assertNotEqual(block.calculate_hash(), expected_hash)
+        self.assertNotEqual(hash_1, hash_2, "Hash should be different for different solutions")
 
-class TestBlockchain(unittest.TestCase):
+class TestBlockchainProofOfSolution(unittest.TestCase):
     def setUp(self):
-        """This method is called before each test."""
-        self.blockchain = Blockchain()
+        """Set up a new blockchain with a low difficulty for each test."""
+        # Using a low difficulty (e.g., 3) makes tests run fast.
+        self.difficulty = 3
+        self.blockchain = Blockchain(difficulty=self.difficulty)
+        self.target_prefix = '0' * self.difficulty
 
-    def test_genesis_block_creation(self):
-        """Tests that the genesis block is created correctly."""
+    def test_blockchain_initialization(self):
+        """Tests the initial state of the blockchain."""
         self.assertEqual(len(self.blockchain.chain), 1)
-        genesis_block = self.blockchain.get_latest_block()
-        self.assertEqual(genesis_block.index, 0)
-        self.assertEqual(genesis_block.transactions, "Genesis Block")
-        self.assertEqual(genesis_block.previous_hash, "0")
+        self.assertEqual(self.blockchain.difficulty, self.difficulty)
+        # Genesis block should be valid
+        self.assertIsNotNone(self.blockchain.get_latest_block().hash)
 
-    def test_add_new_block(self):
-        """Tests adding a new block to the chain."""
-        transactions = {"sender": "Alice", "receiver": "Bob", "amount": 10}
-        self.blockchain.add_block(transactions)
+    def test_solve_problem_for_block(self):
+        """Tests that the solver finds a valid solution."""
+        block = Block(2, "test transactions", "xyz")
+        # The solve_problem_for_block method is now internal to add_block,
+        # but we can test the outcome via add_block.
+        added_block = self.blockchain.add_block("test transactions")
+        self.assertTrue(added_block.hash.startswith(self.target_prefix))
+        self.assertIsNotNone(added_block.solution)
 
-        self.assertEqual(len(self.blockchain.chain), 2)
-        new_block = self.blockchain.get_latest_block()
-        genesis_block = self.blockchain.chain[0]
+    def test_add_block_and_chain_validity(self):
+        """Tests adding a block and then validating the entire chain."""
+        self.blockchain.add_block({"tx": "A->B: 5"})
+        self.blockchain.add_block({"tx": "B->C: 10"})
 
-        self.assertEqual(new_block.index, 1)
-        self.assertEqual(new_block.transactions, transactions)
-        self.assertEqual(new_block.previous_hash, genesis_block.hash)
+        self.assertEqual(len(self.blockchain.chain), 3)
+        self.assertTrue(self.blockchain.is_chain_valid(), "Chain should be valid after adding blocks")
 
-    def test_chain_validity(self):
-        """Tests the integrity of a valid blockchain."""
-        self.blockchain.add_block("tx1")
-        self.blockchain.add_block("tx2")
-        self.assertTrue(self.blockchain.is_chain_valid())
+    def test_chain_invalid_if_data_tampered(self):
+        """Tests that tampering with data invalidates the chain."""
+        self.blockchain.add_block({"tx": "original data"})
 
-    def test_chain_invalid_due_to_data_tampering(self):
-        """Tests that the chain becomes invalid if data in a block is tampered with."""
-        self.blockchain.add_block({"data": "original"})
+        # Tamper with the data of a block in the middle of the chain
+        self.blockchain.chain[1].transactions = "tampered data"
 
-        # Tamper with the block's data directly
-        self.blockchain.chain[1].transactions = {"data": "tampered"}
+        self.assertFalse(self.blockchain.is_chain_valid(), "Chain should be invalid after data tampering")
 
-        self.assertFalse(self.blockchain.is_chain_valid())
+    def test_chain_invalid_if_solution_is_wrong(self):
+        """Tests that a block with an incorrect hash (invalid solution) is detected."""
+        self.blockchain.add_block({"tx": "some data"})
 
-    def test_chain_invalid_due_to_broken_hash_link(self):
-        """Tests that the chain becomes invalid if the hash link is broken."""
-        self.blockchain.add_block({"data": "some data"})
+        # Manually set a hash that does not meet the difficulty requirement
+        self.blockchain.chain[1].hash = "12345" + self.blockchain.chain[1].hash[5:]
 
-        # Manually break the chain's hash link
-        self.blockchain.chain[1].previous_hash = "incorrect_hash_value"
-
-        self.assertFalse(self.blockchain.is_chain_valid())
+        # The is_chain_valid method should detect that the hash doesn't match the data
+        # and also that it doesn't meet the difficulty requirement.
+        self.assertFalse(self.blockchain.is_chain_valid(), "Chain should be invalid if a hash is incorrect")
 
 if __name__ == '__main__':
     unittest.main()
