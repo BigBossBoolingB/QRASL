@@ -1,57 +1,59 @@
-from src.qrasl.blockchain import Blockchain
-from src.qrasl.intent import Intent, Solver
-import json
+from src.qrasl.sharding import BeaconChain, Shard
+from src.qrasl.intent import Intent
 
 def main():
     """
-    A demonstration of the Intent-Driven DAG blockchain.
+    A demonstration of the sharded architecture of the QRASL network.
     """
-    # Use a low difficulty for a quick demonstration run
-    difficulty = 2
-    print(f"--- Creating a new Intent-Driven DAG with difficulty {difficulty} ---\n")
-    dag_chain = Blockchain(difficulty=difficulty)
-    solver = Solver()
+    print("--- Sharded QRASL Network Demonstration ---")
 
-    # 1. Users submit intents to the network's pool
-    print("--- Step 1: Users submit intents to the pool ---")
-    intent1 = Intent(user="Alice", intent_data={'type': 'transfer', 'amount': 10, 'to': 'Bob'})
-    intent2 = Intent(user="Charlie", intent_data={'type': 'transfer', 'amount': 5, 'to': 'David'})
-    dag_chain.add_intent(intent1)
-    dag_chain.add_intent(intent2)
-    print(f"Intent pool now contains {len(dag_chain.intent_pool)} intents.\n")
+    # 1. Initialize the core components: the Beacon Chain and multiple Shards.
+    # As per the README, shards can have different specializations (e.g., difficulty).
+    print("\n--- Step 1: Initializing the Network Infrastructure ---")
+    beacon_chain = BeaconChain()
+    shard_0 = Shard(shard_id=0, difficulty=1)  # A general-purpose shard
+    shard_1 = Shard(shard_id=1, difficulty=2)  # A more secure/slower DeFi shard
 
-    # 2. A Solver decides to create a block by processing the available intents
-    print("--- Step 2: A Solver processes the pool to create the next block ---")
-    new_block_1 = dag_chain.create_new_block(solver)
-    print(f"Intent pool is now empty: {len(dag_chain.intent_pool) == 0}\n")
+    # Shards must be registered with the Beacon Chain to be tracked.
+    beacon_chain.register_shard(shard_0)
+    beacon_chain.register_shard(shard_1)
 
-    # 3. More intents are submitted by users
-    print("--- Step 3: More intents are submitted ---")
-    intent3 = Intent(user="Bob", intent_data={'type': 'transfer', 'amount': 2, 'to': 'Alice'})
-    intent4 = Intent(user="David", intent_data={'type': 'transfer', 'amount': 3, 'to': 'Charlie'})
-    dag_chain.add_intent(intent3)
-    dag_chain.add_intent(intent4)
-    print(f"Intent pool now contains {len(dag_chain.intent_pool)} intents.\n")
+    # 2. Users submit intents to specific shards based on their needs.
+    print("\n--- Step 2: Users submit intents to different shards ---")
+    # A simple transfer on the general-purpose shard
+    shard_0.add_intent(Intent(user="Alice", intent_data={'type': 'transfer', 'amount': 10, 'to': 'Bob'}))
 
-    # 4. The Solver runs again, creating another block
-    print("--- Step 4: The Solver runs again ---")
-    new_block_2 = dag_chain.create_new_block(solver)
+    # Higher value transactions on the DeFi shard
+    shard_1.add_intent(Intent(user="Charlie", intent_data={'type': 'transfer', 'amount': 100, 'to': 'DeFi-Pool-A'}))
+    shard_1.add_intent(Intent(user="David", intent_data={'type': 'transfer', 'amount': 200, 'to': 'DeFi-Pool-B'}))
 
-    # 5. Print the final state of the blockchain for inspection
-    print("\n--- Final Blockchain State ---")
-    sorted_blocks = sorted(dag_chain.blocks.values(), key=lambda b: b.index)
-    for block in sorted_blocks:
-        print(f"Index: {block.index}, Hash: {block.hash[:10]}..., Parents: {[p[:10] for p in block.parent_hashes]}")
-        print("  Solutions in Block:")
-        for sol in block.solutions:
-            print(f"  - Intent: {sol.intent_hash[:10]}... | Executed TX: {json.dumps(sol.executed_tx)}")
-        if not block.solutions:
-            print("  - (Genesis Block)")
+    # 3. Block producers for each shard run independently to process intents.
+    print("\n--- Step 3: Shards create blocks in parallel ---")
+    shard_0.create_block()
+    shard_1.create_block()
 
-    # 6. Validate the integrity of the final DAG
-    print("\n--- Verifying Final DAG Integrity ---")
-    is_valid = dag_chain.is_chain_valid()
-    print(f"Is the final DAG structure valid? -> {is_valid}")
+    # 4. The Beacon Chain creates a network-wide checkpoint to "notarize" the state of all shards.
+    beacon_chain.create_checkpoint()
+
+    # 5. More activity occurs in the next "epoch".
+    print("\n--- Step 4: More activity occurs on the network ---")
+    shard_0.add_intent(Intent(user="Bob", intent_data={'type': 'transfer', 'amount': 5, 'to': 'Alice'}))
+    # Shard 1 has no new intents this round.
+
+    # Shard 0 creates a new block. Shard 1 does not, as it has no intents.
+    shard_0.create_block()
+    shard_1.create_block() # This should indicate no intents to process
+
+    # 6. The Beacon Chain creates a final checkpoint.
+    final_checkpoint = beacon_chain.create_checkpoint()
+
+    print("\n--- Final Network State Summary ---")
+    print(f"Total checkpoints created by BeaconChain: {len(beacon_chain.checkpoints)}")
+    print("Final recorded state in last checkpoint:")
+    for shard_id, state in final_checkpoint.items():
+        # Convert set to list for stable output, then shorten hashes
+        state_hashes_short = [h[:10] for h in sorted(list(state))]
+        print(f"  - Shard {shard_id} Final Tip Hashes: {state_hashes_short}")
 
 if __name__ == "__main__":
     main()
