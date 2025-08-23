@@ -5,71 +5,76 @@ import os
 # Add the src directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.qrasl.block import Block
 from src.qrasl.blockchain import Blockchain
+from src.qrasl.intent import Intent, Solver, Solution
 
-class TestDAGFeatures(unittest.TestCase):
+class TestIntentDrivenWorkflow(unittest.TestCase):
     def setUp(self):
-        """Set up a new DAG blockchain for each test."""
-        # Use a very low difficulty for speed, as we are not testing the solver here.
-        self.difficulty = 1
+        """Set up a new blockchain and a solver for each test."""
+        self.difficulty = 1  # Low difficulty for fast tests
         self.blockchain = Blockchain(difficulty=self.difficulty)
-        self.genesis = self.blockchain.get_tips()[0]
+        self.solver = Solver()
 
-    def test_genesis_block(self):
-        """Tests the properties of the initial genesis block."""
+    def test_add_intent_to_pool(self):
+        """Tests that intents are correctly added to the intent pool."""
+        self.assertEqual(len(self.blockchain.intent_pool), 0)
+        intent = Intent(user="Alice", intent_data={'type': 'transfer', 'to': 'Bob', 'amount': 10})
+        self.blockchain.add_intent(intent)
+        self.assertEqual(len(self.blockchain.intent_pool), 1)
+        self.assertEqual(self.blockchain.intent_pool[0].hash, intent.hash)
+
+    def test_create_block_processes_intents(self):
+        """Tests that creating a block processes intents from the pool and creates solutions."""
+        intent1 = Intent(user="Alice", intent_data={'type': 'transfer', 'to': 'Bob', 'amount': 10})
+        intent2 = Intent(user="Charlie", intent_data={'type': 'transfer', 'to': 'David', 'amount': 5})
+        self.blockchain.add_intent(intent1)
+        self.blockchain.add_intent(intent2)
+
+        new_block = self.blockchain.create_new_block(self.solver)
+
+        # The new block should not be None
+        self.assertIsNotNone(new_block)
+        # It should contain two solutions, one for each intent
+        self.assertEqual(len(new_block.solutions), 2)
+        # The intent pool should now be empty
+        self.assertEqual(len(self.blockchain.intent_pool), 0)
+
+        # Check that the solutions in the block correspond to the processed intents
+        processed_intent_hashes = {s.intent_hash for s in new_block.solutions}
+        self.assertEqual({intent1.hash, intent2.hash}, processed_intent_hashes)
+
+    def test_no_block_created_for_empty_pool(self):
+        """Tests that a block is not created if the intent pool is empty."""
+        new_block = self.blockchain.create_new_block(self.solver)
+        self.assertIsNone(new_block, "No block should be created when there are no intents.")
+        # The blockchain should only contain the genesis block
         self.assertEqual(len(self.blockchain.blocks), 1)
-        self.assertEqual(self.genesis.index, 0)
-        self.assertEqual(self.genesis.parent_hashes, [])
-        self.assertEqual(len(self.blockchain.get_tips()), 1, "Initially, only the genesis block should be a tip.")
 
-    def test_add_block_and_tips(self):
-        """Tests adding blocks and how it affects the tips of the DAG."""
-        # Add two parallel blocks after genesis
-        block_a = self.blockchain.add_block("tx_a", [self.genesis.hash])
-        block_b = self.blockchain.add_block("tx_b", [self.genesis.hash])
+    def test_end_to_end_chain_validity(self):
+        """Tests the validity of a chain after several blocks are created via intents."""
+        # Block 1
+        self.blockchain.add_intent(Intent(user="User1", intent_data={'type': 'transfer', 'to': 'User2', 'amount': 1}))
+        self.blockchain.create_new_block(self.solver)
 
-        # The tips should now be block_a and block_b
-        tip_hashes = {t.hash for t in self.blockchain.get_tips()}
-        self.assertEqual({block_a.hash, block_b.hash}, tip_hashes, "Tips should be the two new parallel blocks.")
+        # Block 2
+        self.blockchain.add_intent(Intent(user="User2", intent_data={'type': 'transfer', 'to': 'User1', 'amount': 2}))
+        self.blockchain.create_new_block(self.solver)
 
-        # Add a merge block that combines the two branches
-        block_c = self.blockchain.add_block("tx_c_merge", [block_a.hash, block_b.hash])
+        self.assertTrue(self.blockchain.is_chain_valid(), "The chain should be valid after creating blocks from intents.")
 
-        # The only tip should now be the new merge block
-        self.assertEqual(len(self.blockchain.get_tips()), 1)
-        self.assertEqual(self.blockchain.get_tips()[0].hash, block_c.hash, "The merge block should be the only tip.")
+    def test_validation_fails_if_solution_tampered(self):
+        """Tests that the chain is invalid if a solution within a block is tampered with."""
+        self.blockchain.add_intent(Intent(user="Alice", intent_data={'type': 'transfer', 'to': 'Bob', 'amount': 10}))
+        new_block = self.blockchain.create_new_block(self.solver)
 
-    def test_add_block_with_nonexistent_parent(self):
-        """Tests that adding a block with a fake parent hash raises an error."""
-        with self.assertRaises(ValueError):
-            self.blockchain.add_block("tx_bad", ["this_hash_does_not_exist"])
+        # The chain should be valid initially
+        self.assertTrue(self.blockchain.is_chain_valid())
 
-    def test_dag_is_valid(self):
-        """Tests the is_chain_valid method on a valid DAG structure."""
-        block_a = self.blockchain.add_block("tx_a", [self.genesis.hash])
-        block_b = self.blockchain.add_block("tx_b", [self.genesis.hash])
-        self.blockchain.add_block("tx_c_merge", [block_a.hash, block_b.hash])
-        self.assertTrue(self.blockchain.is_chain_valid(), "A validly constructed DAG should pass validation.")
+        # Tamper with the executed transaction amount inside the solution
+        new_block.solutions[0].executed_tx['amount'] = 9999
 
-    def test_dag_invalid_if_data_tampered(self):
-        """Tests that tampering with a block's data invalidates the DAG."""
-        block_a = self.blockchain.add_block("tx_a", [self.genesis.hash])
-        # Manually change the transaction data after the block has been added
-        block_a.transactions = "tampered_tx"
-        self.assertFalse(self.blockchain.is_chain_valid(), "DAG should be invalid if any block's data is tampered with.")
-
-    def test_dag_invalid_if_cycle_detected(self):
-        """Tests that the validation logic detects cycles."""
-        block_a = self.blockchain.add_block("tx_a", [self.genesis.hash])
-        # Manually create a block that points to itself as a parent (a simple cycle)
-        # This is hard to do with add_block, so we tamper with the block's parents after creation.
-        block_a.parent_hashes.append(block_a.hash)
-        # The validation should detect this logical inconsistency.
-        # Note: Our current index check is the primary cycle detection.
-        # Let's try to break the index rule instead.
-        block_a.index = 0 # Make its index the same as its parent (genesis)
-        self.assertFalse(self.blockchain.is_chain_valid(), "DAG should be invalid if a cycle is detected via indices.")
+        # The chain should now be invalid because the block's hash will not match its content
+        self.assertFalse(self.blockchain.is_chain_valid(), "The chain should be invalid after tampering with a solution.")
 
 if __name__ == '__main__':
     unittest.main()
