@@ -1,86 +1,62 @@
 from src.qrasl.sharding import BeaconChain, Shard
 from src.qrasl.intent import Intent
-import json
-
-def print_shard_state(shard):
-    """A helper function to print the detailed state of a single shard."""
-    print(f"\n--- Shard {shard.shard_id} State ---")
-    if not shard.chain.blocks:
-        print("  No blocks yet.")
-        return
-
-    sorted_blocks = sorted(shard.chain.blocks.values(), key=lambda b: b.index)
-    for block in sorted_blocks:
-        print(f"  Block {block.index} (Hash: {block.hash[:10]}...):")
-        if block.solutions:
-            print("    Solutions (from local intents):")
-            for sol in block.solutions:
-                print(f"    - Intent: {sol.intent_hash[:10]}... -> TX: {json.dumps(sol.executed_tx)}")
-        if block.processed_messages:
-            print("    Processed Messages (from other shards):")
-            for msg in block.processed_messages:
-                print(f"    - From Shard {msg.source_shard_id}: {json.dumps(msg.payload)}")
-        if not block.solutions and not block.processed_messages:
-            print("    - (Genesis Block)")
 
 def main():
     """
-    A demonstration of the cross-shard communication via the Beacon Chain.
+    A demonstration of the 'Signal-Execute' governance model.
     """
-    print("--- Cross-Shard Communication Demonstration ---")
+    print("--- 'Signal-Execute' Governance Demonstration ---")
 
-    # 1. Setup the network with a Beacon Chain and two shards.
+    # 1. Setup the network with a general shard and a designated Governance Shard (ID 6).
     print("\n--- Step 1: Initializing Network ---")
     beacon_chain = BeaconChain()
     shard_0 = Shard(shard_id=0, difficulty=1)
-    shard_1 = Shard(shard_id=1, difficulty=1)
+    # The Governance Shard has its own solver and state management for proposals.
+    shard_6 = Shard(shard_id=6, shard_type='governance')
     beacon_chain.register_shard(shard_0)
-    beacon_chain.register_shard(shard_1)
+    beacon_chain.register_shard(shard_6)
+    print(f"Initial difficulty for Shard 0: {shard_0.chain.difficulty}")
 
-    # 2. A user on Shard 0 initiates a cross-shard transfer to a user on Shard 1.
-    print("\n--- Step 2: User on Shard 0 initiates a cross-shard transfer ---")
-    cross_shard_intent = Intent(
-        user="Alice",
-        intent_data={
-            'type': 'cross_shard_transfer',
-            'amount': 50,
-            'to_shard': 1,
-            'to_user': 'Zoe'
-        }
+    # 2. A user submits an intent to Shard 6 to propose a change.
+    print("\n--- Step 2: A proposal to change network difficulty is submitted to Shard 6 ---")
+    proposal_intent = Intent(
+        user="GovUserA",
+        intent_data={'type': 'propose', 'id': 'prop-001-difficulty', 'target': 'difficulty', 'value': 2}
     )
-    shard_0.add_intent(cross_shard_intent)
+    shard_6.add_intent(proposal_intent)
 
-    # 3. Shard 0's block producer runs. It processes the intent, creating a local
-    #    "debit" transaction and an outgoing message for Shard 1.
-    print("\n--- Step 3: Shard 0 creates a block ---")
-    outgoing_messages_from_0 = shard_0.create_block()
+    # The Gov shard processes this, creating the proposal in its state.
+    _, _, gov_actions = shard_6.create_block()
+    # The Beacon Chain processes any outputs (there should be no execution actions yet).
+    beacon_chain.process_shard_outputs([], gov_actions)
 
-    # 4. The generated messages are published to the Beacon Chain's buffer.
-    print("\n--- Step 4: Messages from Shard 0 published to Beacon Chain ---")
-    beacon_chain.publish_messages(outgoing_messages_from_0)
+    # 3. Other users signal their support for the proposal by sending intents to Shard 6.
+    print("\n--- Step 3: Users signal support for 'prop-001-difficulty' ---")
+    shard_6.add_intent(Intent("User1", {'type': 'signal', 'proposal_id': 'prop-001-difficulty', 'weight': 50}))
+    shard_6.add_intent(Intent("User2", {'type': 'signal', 'proposal_id': 'prop-001-difficulty', 'weight': 60}))
 
-    # 5. The Beacon Chain performs its checkpointing, which includes routing
-    #    all messages from its buffer to the destination shards' incoming queues.
-    print("\n--- Step 5: Beacon Chain checkpoints and routes messages ---")
-    beacon_chain.create_checkpoint()
+    # 4. The Governance shard runs again. The combined signal weight (110) should
+    #    exceed the default threshold (100), causing the proposal to pass.
+    print("\n--- Step 4: Governance shard processes signals ---")
+    # The `create_block` call on the governance shard will return an execution action.
+    _, _, gov_actions = shard_6.create_block()
 
-    # Verify Shard 1 received the message
-    print(f"Shard 1's incoming message queue size: {len(shard_1.incoming_messages)}")
+    # 5. The Beacon Chain receives the execution action and applies the change to all shards.
+    print("\n--- Step 5: Beacon Chain executes the passed proposal's action ---")
+    beacon_chain.process_shard_outputs([], gov_actions)
 
-    # 6. Shard 1's block producer runs. It has no new intents, but it finds
-    #    the message in its queue and processes it, creating a "credit" transaction.
-    print("\n--- Step 6: Shard 1 creates a block, processing the delivered message ---")
-    outgoing_messages_from_1 = shard_1.create_block()
-    # This should be empty, as no new cross-shard intents were processed
-    beacon_chain.publish_messages(outgoing_messages_from_1)
+    # 6. Verify that the difficulty parameter on Shard 0 has been updated.
+    print("\n--- Step 6: Verify parameter change on a general-purpose shard ---")
+    print(f"Verifying difficulty on Shard 0. Expected: 2, Actual: {shard_0.chain.difficulty}")
+    if shard_0.chain.difficulty == 2:
+        print("Verification successful! The network parameter was updated via governance.")
+    else:
+        print("Verification FAILED.")
 
-    # 7. A final checkpoint is created to finalize the state.
-    beacon_chain.create_checkpoint()
-
-    # 8. Print the final, detailed state of both shards to see the result.
-    print("\n--- Final Detailed State of All Shards ---")
-    print_shard_state(shard_0)
-    print_shard_state(shard_1)
+    # We can create a block on Shard 0 to see it use the new difficulty.
+    print("\n--- Creating a block on Shard 0 with the new difficulty ---")
+    shard_0.add_intent(Intent("Alice", {'type': 'transfer', 'to': 'Bob', 'amount': 10}))
+    shard_0.create_block()
 
 if __name__ == "__main__":
     main()

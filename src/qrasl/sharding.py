@@ -1,17 +1,25 @@
 from .blockchain import Blockchain
 from .intent import Solver
+from .governance import GovernanceSolver, Proposal
 
 class Shard:
     """
-    Represents a single shard in the network. Its logic is now updated to
-    handle the full cross-shard communication life cycle.
+    Represents a single shard, now with specialization. It can be a 'general'
+    shard or a 'governance' shard with special logic.
     """
-    def __init__(self, shard_id, difficulty=2):
+    def __init__(self, shard_id, difficulty=2, shard_type='general'):
         self.shard_id = shard_id
+        self.type = shard_type
         self.chain = Blockchain(difficulty=difficulty)
-        self.solver = Solver(shard_id=self.shard_id)
         self.incoming_messages = []
-        print(f"Shard {self.shard_id}: Initialized.")
+
+        if self.type == 'governance':
+            self.solver = GovernanceSolver()
+            self.proposals = {}  # The current state of all proposals
+        else:
+            self.solver = Solver(shard_id=self.shard_id)
+
+        print(f"Shard {self.shard_id} (type: {self.type}): Initialized.")
 
     def add_intent(self, intent):
         """Adds an intent to this shard's intent pool."""
@@ -24,23 +32,34 @@ class Shard:
 
     def create_block(self):
         """
-        Triggers the creation of a new block on this shard's chain.
-        It processes both local intents and incoming messages.
-        It returns any newly generated outgoing messages.
+        Triggers the creation of a new block or a governance state update.
+        Returns a tuple: (new_block, outgoing_messages, governance_actions)
         """
-        print(f"--- Shard {self.shard_id}: Attempting to create a new block ---")
+        print(f"--- Shard {self.shard_id}: Attempting to create a new block/state update ---")
 
-        # Pass the current queue of incoming messages to the block creation logic
-        messages_to_process = self.incoming_messages
-        self.incoming_messages = [] # Clear the queue
+        if self.type == 'governance':
+            intents = self.chain.intent_pool
+            # The Governance Solver processes intents and the current proposal state
+            tips = self.chain.get_tips()
+            new_block_index = max(t.index for t in tips) + 1 if tips else 0
+            updated_proposals, execution_actions = self.solver.process_governance_intents(
+                intents, self.proposals, new_block_index
+            )
+            self.proposals = updated_proposals
+            self.chain.intent_pool = [] # Clear the processed intents
 
-        new_block, outgoing_messages = self.chain.create_new_block(
-            solver=self.solver,
-            incoming_messages=messages_to_process
-        )
-
-        # Return the new block and the outgoing messages
-        return new_block, outgoing_messages
+            # A governance shard doesn't create a "block" in the same way.
+            # It just updates its state and outputs actions for the Beacon Chain.
+            return None, [], execution_actions
+        else:
+            # Standard shard logic
+            messages_to_process = self.incoming_messages
+            self.incoming_messages = []
+            new_block, outgoing_messages = self.chain.create_new_block(
+                solver=self.solver,
+                incoming_messages=messages_to_process
+            )
+            return new_block, outgoing_messages, [] # No governance actions
 
     def get_latest_state(self):
         """Returns the set of tip hashes for this shard's DAG."""
@@ -48,9 +67,7 @@ class Shard:
 
 
 class BeaconChain:
-    """
-    The central coordinator, which acts as a message router for cross-shard communication.
-    """
+    """The central coordinator, responsible for routing and executing governance actions."""
     def __init__(self):
         self.shards = {}
         self.checkpoints = []
@@ -61,44 +78,53 @@ class BeaconChain:
         """Adds a new shard to be tracked by the Beacon Chain."""
         if shard.shard_id in self.shards:
             raise ValueError(f"Shard with ID {shard.shard_id} is already registered.")
-        print(f"BeaconChain: Registering Shard {shard.shard_id}...")
+        print(f"BeaconChain: Registering Shard {shard.shard_id} (type: {shard.type})...")
         self.shards[shard.shard_id] = shard
 
-    def publish_messages(self, messages):
-        """Called by the network operator to publish outgoing messages from shards."""
-        if messages:
-            self.message_buffer.extend(messages)
-            print(f"BeaconChain: Published {len(messages)} new messages to the buffer.")
+    def process_shard_outputs(self, outgoing_messages, governance_actions):
+        """
+        Processes the outputs from a shard's block creation, publishing messages
+        and executing governance actions.
+        """
+        if outgoing_messages:
+            self.message_buffer.extend(outgoing_messages)
+            print(f"BeaconChain: Published {len(outgoing_messages)} new messages to the buffer.")
+
+        if governance_actions:
+            print(f"BeaconChain: Received {len(governance_actions)} governance actions to execute.")
+            for action in governance_actions:
+                self.execute_governance_action(action)
+
+    def execute_governance_action(self, action):
+        """Executes a governance action, like changing a network parameter."""
+        print(f"BeaconChain: Executing action for proposal '{action['proposal_id']}'...")
+        if action['type'] == 'execute_proposal':
+            target_param = action['target']
+            new_value = action['value']
+
+            if target_param == 'difficulty':
+                print(f"  - ACTION: Changing network difficulty for all shards to {new_value}.")
+                for shard in self.shards.values():
+                    shard.chain.difficulty = new_value
+            else:
+                print(f"  - WARNING: Unknown governance target '{target_param}'. Action ignored.")
 
     def create_checkpoint(self):
-        """
-        Creates a checkpoint and routes all messages currently in the buffer.
-        """
+        """Creates a checkpoint and routes all messages currently in the buffer."""
         print("\n--- BeaconChain: Starting checkpoint process ---")
 
-        # 1. Route messages from the buffer
-        print("--- BeaconChain: Routing messages ---")
+        # Route messages
         messages_to_route = self.message_buffer
         self.message_buffer = []
-
         for msg in messages_to_route:
             destination_shard = self.shards.get(msg.destination_shard_id)
             if destination_shard:
-                print(f"  - Routing message from Shard {msg.source_shard_id} to Shard {msg.destination_shard_id}.")
                 destination_shard.deliver_message(msg)
-            else:
-                print(f"  - WARNING: Destination Shard {msg.destination_shard_id} not found. Message dropped.")
-        print("--- Message routing complete ---")
 
-        # 2. Record the state of all shards
-        print("--- BeaconChain: Recording shard states ---")
+        # Record shard states
         checkpoint_data = {}
         for shard_id, shard in self.shards.items():
-            shard_state = shard.get_latest_state()
-            checkpoint_data[shard_id] = shard_state
-            shard_state_short = {h[:8] for h in shard_state}
-            print(f"  - Recording state for Shard {shard_id}: {shard_state_short}")
-
+            checkpoint_data[shard_id] = shard.get_latest_state()
         self.checkpoints.append(checkpoint_data)
         print("--- Checkpoint created ---")
         return checkpoint_data
