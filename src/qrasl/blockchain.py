@@ -5,27 +5,28 @@ import time
 class Blockchain:
     """
     Manages the DAG of blocks and the pool of user intents.
+    The block creation logic is now updated to handle cross-shard messages.
     """
     def __init__(self, difficulty=4):
         self.blocks = {}
-        self.intent_pool = []  # A mempool for pending user intents
+        self.intent_pool = []
         self.difficulty = difficulty
         self.create_genesis_block()
 
     def add_intent(self, intent):
-        """
-        Allows a user to submit an intent to the network's intent pool.
-        """
+        """Adds an intent to the pool."""
         self.intent_pool.append(intent)
         print(f"Intent {intent.hash[:10]}... added to the pool.")
         return True
 
     def create_genesis_block(self):
-        """
-        Creates the first block in the DAG. The genesis block is special
-        as it contains no solutions.
-        """
-        genesis_block = Block(index=0, solutions=[], parent_hashes=[])
+        """Creates the first block, with no solutions or processed messages."""
+        genesis_block = Block(
+            index=0,
+            solutions=[],
+            parent_hashes=[],
+            processed_messages=[] # New field
+        )
         genesis_block.solution = 0
         genesis_block.hash = genesis_block.calculate_hash()
         self.blocks[genesis_block.hash] = genesis_block
@@ -48,52 +49,53 @@ class Blockchain:
         print(f"Block problem solved in {end_time - start_time:.4f}s. Solution: {block.solution}")
         return block
 
-    def create_new_block(self, solver, max_intents=10):
+    def create_new_block(self, solver, incoming_messages, max_intents=10):
         """
-        This function is called by a block producer (like a Solver or Validator)
-        to create a new block by processing intents from the pool.
+        Creates a new block by processing intents and incoming messages.
+        Returns the new block and any generated outgoing messages.
         """
-        if not self.intent_pool:
-            print("No pending intents to process. Block not created.")
-            return None
-
-        # 1. Select intents to process
+        # 1. Process intents from the pool
         intents_to_process = self.intent_pool[:max_intents]
-        print(f"Processing {len(intents_to_process)} intents...")
+        local_solutions, outgoing_messages = solver.solve_intents(intents_to_process)
+        print(f"Processing {len(intents_to_process)} intents -> {len(local_solutions)} local solutions, {len(outgoing_messages)} outgoing messages.")
 
-        # 2. Use the solver to generate solutions
-        solutions = solver.solve_intents(intents_to_process)
-        if not solutions:
-            print("Solver did not produce any solutions for the selected intents.")
-            # Clear the intents that couldn't be solved to prevent getting stuck
-            self.intent_pool = self.intent_pool[len(intents_to_process):]
-            return None
+        # Also process incoming messages. For this simulation, we'll just record them.
+        # A real implementation would have logic here to credit users, etc.
+        processed_messages = incoming_messages
+        print(f"Processing {len(processed_messages)} incoming messages.")
 
-        # 3. Select parent blocks (the current tips of the DAG)
+        # If there's nothing to do, don't create a block.
+        if not local_solutions and not processed_messages:
+            print("No work to do. Block not created.")
+            self.intent_pool = self.intent_pool[len(intents_to_process):] # Still clear the (unsolvable) intents
+            return None, []
+
+        # 2. Create the block with solutions and processed messages
         parent_blocks = self.get_tips()
         parent_hashes = [p.hash for p in parent_blocks]
-
-        # 4. Create the new block with the solutions
         new_index = max(p.index for p in parent_blocks) + 1 if parent_blocks else 0
         new_block = Block(
             index=new_index,
-            solutions=solutions,
-            parent_hashes=parent_hashes
+            solutions=local_solutions,
+            parent_hashes=parent_hashes,
+            processed_messages=processed_messages
         )
 
-        # 5. Solve the block's own computational problem (mining)
+        # 3. Solve the block's own problem and finalize it
         solved_block = self.solve_problem_for_block(new_block)
         solved_block.hash = solved_block.calculate_hash()
 
-        # 6. Add the finalized block to the DAG and update the intent pool
+        # 4. Add to DAG and clean up intent pool
         self.blocks[solved_block.hash] = solved_block
         self.intent_pool = self.intent_pool[len(intents_to_process):]
 
         print(f"New block {solved_block.index} created with hash {solved_block.hash[:10]}...")
-        return solved_block
+        return solved_block, outgoing_messages
 
     def is_chain_valid(self):
         """Validates the entire DAG blockchain."""
+        # This method doesn't need to change, as the hash calculation in Block
+        # already covers the new `processed_messages` field.
         if not self.blocks:
             return True
         target_prefix = '0' * self.difficulty

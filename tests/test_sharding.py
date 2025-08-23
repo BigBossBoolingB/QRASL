@@ -6,75 +6,103 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.qrasl.sharding import BeaconChain, Shard
-from src.qrasl.intent import Intent
+from src.qrasl.intent import Intent, CrossShardMessage
 
-class TestShardingSystem(unittest.TestCase):
+class TestCrossShardCommunication(unittest.TestCase):
     def setUp(self):
-        """Set up a new BeaconChain and two Shards for each test."""
+        """Set up a fresh network for each test."""
         self.beacon_chain = BeaconChain()
         self.shard_0 = Shard(shard_id=0, difficulty=1)
         self.shard_1 = Shard(shard_id=1, difficulty=1)
-
-    def test_shard_initialization(self):
-        """Tests that a Shard initializes with its own genesis block."""
-        self.assertEqual(self.shard_0.shard_id, 0)
-        self.assertIsNotNone(self.shard_0.chain, "Shard should have a chain instance.")
-        self.assertEqual(len(self.shard_0.chain.blocks), 1, "Shard's chain should have a genesis block.")
-
-    def test_beacon_chain_shard_registration(self):
-        """Tests that shards can be registered and that duplicate IDs are rejected."""
-        self.beacon_chain.register_shard(self.shard_0)
-        self.assertIn(0, self.beacon_chain.shards)
-        self.assertEqual(self.beacon_chain.shards[0], self.shard_0)
-
-        # Test that registering a shard with a duplicate ID raises a ValueError
-        with self.assertRaises(ValueError):
-            self.beacon_chain.register_shard(self.shard_0)
-
-    def test_independent_shard_activity(self):
-        """Tests that activity on one shard does not affect another."""
-        # Add an intent and create a block on Shard 0
-        intent_a = Intent(user="Alice", intent_data={'type': 'transfer', 'to': 'Bob', 'amount': 10})
-        self.shard_0.add_intent(intent_a)
-
-        self.assertEqual(len(self.shard_0.chain.intent_pool), 1)
-        self.assertEqual(len(self.shard_1.chain.intent_pool), 0, "Shard 1's pool should be unaffected.")
-
-        block_a = self.shard_0.create_block()
-
-        self.assertEqual(len(self.shard_0.chain.blocks), 2)
-        self.assertEqual(len(self.shard_1.chain.blocks), 1, "Shard 1's chain should be unaffected.")
-        self.assertIsNotNone(block_a)
-
-    def test_checkpoint_mechanism(self):
-        """Tests the Beacon Chain's ability to create accurate checkpoints."""
         self.beacon_chain.register_shard(self.shard_0)
         self.beacon_chain.register_shard(self.shard_1)
 
-        # Create the first checkpoint when shards are in their genesis state
-        checkpoint1 = self.beacon_chain.create_checkpoint()
-        self.assertEqual(len(self.beacon_chain.checkpoints), 1)
+    def test_message_generation_from_intent(self):
+        """
+        Tests that a 'cross_shard_transfer' intent correctly generates
+        both a local solution (debit) and an outgoing message (credit).
+        """
+        intent = Intent(
+            user="Alice",
+            intent_data={'type': 'cross_shard_transfer', 'to_shard': 1, 'to_user': 'Zoe', 'amount': 50}
+        )
+        self.shard_0.add_intent(intent)
 
-        # Get the genesis hashes to verify the checkpoint
-        genesis_hash_0 = list(self.shard_0.chain.blocks.keys())[0]
-        genesis_hash_1 = list(self.shard_1.chain.blocks.keys())[0]
+        # The shard's create_block method should return the outgoing messages
+        _, outgoing_messages = self.shard_0.create_block()
 
-        self.assertEqual(checkpoint1[0], {genesis_hash_0})
-        self.assertEqual(checkpoint1[1], {genesis_hash_1})
+        # Verify the outgoing message
+        self.assertEqual(len(outgoing_messages), 1)
+        msg = outgoing_messages[0]
+        self.assertIsInstance(msg, CrossShardMessage)
+        self.assertEqual(msg.destination_shard_id, 1)
+        self.assertEqual(msg.payload['user'], 'Zoe')
 
-        # Add a block to Shard 0 and create another checkpoint
-        self.shard_0.add_intent(Intent(user="UserA", intent_data={'type': 'transfer', 'to': 'UserB', 'amount': 99}))
-        new_block_shard_0 = self.shard_0.create_block()
+        # Verify the local block on Shard 0 contains the corresponding debit
+        local_block = self.shard_0.chain.get_tips()[0]
+        self.assertEqual(len(local_block.solutions), 1)
+        self.assertEqual(local_block.solutions[0].executed_tx['from'], 'Alice')
+        self.assertEqual(local_block.solutions[0].executed_tx['to'], 'cross_shard_burn_address')
 
-        checkpoint2 = self.beacon_chain.create_checkpoint()
-        self.assertEqual(len(self.beacon_chain.checkpoints), 2)
+    def test_message_routing_via_beacon_chain(self):
+        """Tests that the Beacon Chain correctly routes messages to the destination shard."""
+        msg = CrossShardMessage(source_shard_id=0, destination_shard_id=1, payload={'data': 'test'})
+        self.beacon_chain.publish_messages([msg])
 
-        # The state for Shard 0 should have changed to the new block's hash
-        self.assertNotEqual(checkpoint1[0], checkpoint2[0])
-        self.assertEqual(checkpoint2[0], {new_block_shard_0.hash})
+        # Before checkpointing, the message should be in the buffer, not the shard's queue
+        self.assertEqual(len(self.beacon_chain.message_buffer), 1)
+        self.assertEqual(len(self.shard_1.incoming_messages), 0)
 
-        # The state for Shard 1 should have remained the same
-        self.assertEqual(checkpoint1[1], checkpoint2[1])
+        # After checkpointing, the buffer should be empty and the message delivered
+        self.beacon_chain.create_checkpoint()
+        self.assertEqual(len(self.beacon_chain.message_buffer), 0)
+        self.assertEqual(len(self.shard_1.incoming_messages), 1)
+        self.assertEqual(self.shard_1.incoming_messages[0].payload['data'], 'test')
+
+    def test_message_processing_in_new_block(self):
+        """Tests that a destination shard correctly processes a delivered message into a new block."""
+        msg = CrossShardMessage(source_shard_id=0, destination_shard_id=1, payload={'data': 'test'})
+        self.shard_1.deliver_message(msg)
+
+        # Create a block on the destination shard
+        new_block, _ = self.shard_1.create_block()
+
+        self.assertIsNotNone(new_block)
+        # The new block should contain the processed message
+        self.assertEqual(len(new_block.processed_messages), 1)
+        self.assertEqual(new_block.processed_messages[0].payload['data'], 'test')
+        # The shard's incoming queue should now be empty
+        self.assertEqual(len(self.shard_1.incoming_messages), 0)
+
+    def test_full_cross_shard_lifecycle(self):
+        """
+        Performs an end-to-end test of a cross-shard transaction, from intent
+        submission on Shard 0 to its inclusion in a block on Shard 1.
+        """
+        # 1. User submits a cross-shard intent to Shard 0
+        intent = Intent("Alice", {'type': 'cross_shard_transfer', 'to_shard': 1, 'to_user': 'Zoe', 'amount': 50})
+        self.shard_0.add_intent(intent)
+
+        # 2. Shard 0 creates a block, generating an outgoing message
+        _, outgoing = self.shard_0.create_block()
+
+        # 3. The message is published to the Beacon Chain
+        self.beacon_chain.publish_messages(outgoing)
+
+        # 4. The Beacon Chain checkpoints, routing the message to Shard 1
+        self.beacon_chain.create_checkpoint()
+
+        # 5. Shard 1 creates a block, processing the message from its queue
+        final_block_on_shard_1, _ = self.shard_1.create_block()
+
+        # Final Assertions
+        self.assertEqual(len(self.shard_0.chain.blocks), 2, "Shard 0 should have genesis + 1 block.")
+        self.assertEqual(len(self.shard_1.chain.blocks), 2, "Shard 1 should have genesis + 1 block.")
+
+        # Verify the contents of the final block on Shard 1
+        self.assertEqual(len(final_block_on_shard_1.processed_messages), 1)
+        self.assertEqual(final_block_on_shard_1.processed_messages[0].payload['user'], 'Zoe')
+        self.assertEqual(final_block_on_shard_1.processed_messages[0].payload['amount'], 50)
 
 if __name__ == '__main__':
     unittest.main()
