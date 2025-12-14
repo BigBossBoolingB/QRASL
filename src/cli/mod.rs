@@ -1,7 +1,8 @@
 //! The `cli` module provides the command-line interface for the QRASL node.
 
+use crate::node::ShardNode;
 use clap::{Parser, Subcommand};
-use crate::crypto::{self, PublicKeyBytes, SecretKeyBytes};
+use crate::crypto::{self};
 use crate::core::types::Transaction;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,6 +21,10 @@ enum Commands {
     Wallet(WalletArgs),
     /// Transaction-related commands
     Transaction(TransactionArgs),
+    /// Node-related commands
+    Node(NodeArgs),
+    /// Chain-related commands
+    Chain(ChainArgs),
 }
 
 #[derive(Parser)]
@@ -30,8 +35,8 @@ struct WalletArgs {
 
 #[derive(Subcommand)]
 enum WalletCommands {
-    /// Get the balance of the mock genesis account
-    Balance,
+    /// Get the balance of the genesis account
+    GenesisBalance,
 }
 
 #[derive(Parser)]
@@ -42,58 +47,63 @@ struct TransactionArgs {
 
 #[derive(Subcommand)]
 enum TransactionCommands {
-    /// Create a signed tx from the genesis account to a new account
+    /// Create a test transaction from the genesis account
     CreateTest,
 }
 
-// Mocks for now
-// In a real scenario, this would be loaded from a config file.
-const GENESIS_SK_HEX: &str = "5ae886e721b6dd5646db24f56173e5b667c97bb8707475bdf1c102b3372adf650bda823eb24f023b2b7219493664d47be908bc6b2a36b10743f40f13dbb54ea61cd15cb057773d69822289a4b4c79efd8d84c1cc5c711d14d78c0736c4f82e4ab30c76b72e46d7c1e842e28b4b00700118200829c5617e7a84883da0cb6f92ea2346682492459a840003b95021912d530852a2860d60102d23b66c9b1064c99070d1462904230a230650029321cc92682238302300458a386e22a20453c28550b0455396081ca02119036941000224040a94204e212501593471d9460c0834260a878462027152a68504a925da104ec2980811c58c80824851226004448221b721cbc24953c20d544445090882da224e53102243808c19474e88a4455c0621a3a8014480445a288509372d03109202438cd98861dc028d6414321a388c4bb431420448e24245932428d2a44508950ca0b46d90c08401201148206e44b620083872a096850b186500306014188a1c26054b442e9cc86d8b226221c20593184a63202e0c016e50826861166c24856412b50cd0108201c76189286d099660dc340d12954449464282142c0c0812d830024b4809d31485a3081120210441064510058d530601e412890ac684e4807184226ddbb82ca0c42049c22d080421c9026042166504116e212728dc86680b4966da0226cb984448a644c82892099384091252443029a3160e18980919a87158820c4bc289e4c86cc01605d4160620044609154090108249468563322a232730a2366d9b2851c1920009170503c9640b9125d3066921914de3203163b04d4830718b866108250502a850c3c44d43327048444cc4a048dc826924397118a12051a8695ca4899b94701cc361d90005598280c3840d1c39045b4270012781a4b6018b944918c64549386080466262c220c8c06de2b081a1388481048d5b463240421219992002b64413c70108248c89300d8a809191160492c40d0998500b036c5084014c406524a889c29610d4800ce1902003b35164484e94124c84a48150142914289222498243104588a82de020511b0132030832114421193342e4b86d12306da4a80c42209223106d218009d2b889e204648b38642321061432520cc8295a980543a66012890d49426559382c12900d64182cc08601810646e3228004c8850a36850b457201c6610bc5250a85009990251a2242cc8809db4691e19001a0c66952268a19c469184249c1026812168a1b17054330890331128246112294088a4031d93264c8365214a24803432001086259a2301c145018197103466553102c03844c0301700a970dc8848c0a178d12370d620468da142d89208524090ed220619ca821138208420009001971623421889445a3c20d0c04248936460307111a946090482263166561083024876de1b049e1a48d89300093961008460643c6241a37700b8524c9a87154b6698496909c082460020d019208e49491a38260db124588b40843b601d3224a52108914155009c00c1c09004c422d12007099c42061a64520012102b3518b342c1a872140a0111ba381244004a202000b32810b0789890611093522104349032405d912621c48842328820ab80524404c1a0590e0208a402241db084240b8510241698c343043c02981a669e430095a38290ac25090204412052c1bc528c9c410c0446950c60120b02488b66d22428c23370ca33825d8b80401c12002348504448118202d81208111a23123b4485ab068a3b009033390a0108899004e1cc484dc06208c34698a84200bc1709c2811129540a3100958a07082220c2123504004881a816d5b4026d81091dc86000cb80cd0986809002ccc466ac8364010220861005209098593a68c91486ce1220ea1061060b26d0a890dc804601002410bc80923118d03372e593651421264111211e4043021196c1c1426113064cc469161b80860942d890626233911223401148361a3802400184099284014405124050641b281129041d342884120461aa465112544da306811228d1b1869c9b89120338a01882cd126664916254cc089a4c28d49446e13b32514b56dd18449484088191080d8448021a82089349254b47100c521dcb48892224eda102a22b42c02982cc434725ac4715a108ea4b0918b34504cb27023c26018996413082220b541801682cc044e60a001e4c40972db0a9895483fa911c3bf49a4833b0b35d4563584c9f28b4f1caebd16c6718bbf8d6fb09c1f28a59e5eb056c4d2a0f9aa99c79b360010f95db8fca2bc29c64af04b3316cc8fdfd7907bf36b74ad73384132cc8acf6730d0d56a10d3a5f9a4de2a22b309f5f501f554c6ae0041dd8c6d61b088af6da382d5579e1641ea95d3a9181e72bb1548b8fc21e6ee7ab26ddee2a78564708c64caf1a14c43a641c49ce97248899c10fb8781da448d6dcb201e32adab4f16b53d0c04c1e93ef88a7bc992fafc9eb8b7f75f4e386cdee488a9ad45e76aea1f2b8f54924f437d9bcb0cf68575359010bbb912082bf6219e51ca5ffdc880ad9b7d51f577ef05063d859a84fcadc2f46169616bbb076d55e2011ad8560e987589274a6e249615c6d44ef85e38962d57384905cdce59eab963ca4ab6b3d142adbdd40e21a9a5d8d30d81964812e1a1b1663fc493bef52b0ee9bd59b6ae2e1243e6e2a58a715194b0f0849b22f0890730565fe9f5fcd3ba56525b86b9ecc49d6a0571fa17d4d4a23f203d5da9e075d89ef100db4ce9892a358f721aa59d0863cfe24386915bd2acff8c1caa9f7e83f98799f085b323f968c449dadaed466224ad2eb8937e5a7b28fe3c28fa981141ac609630da0c08a2587e315a9d448abfea91f5feeca32fa76f24a8a4192cb946ec994bbfcc23ab394c3603f29fc19690a8e5524e86a9e77d64caf3d221d3485318d69cc4cf88b15cecacdf00548c9383a5c78653be94db584e0fca480bf12b2b39384ba413c4eaa8b18a47abc93f3a867783b84738af605406ed31c1130f68c96f373c6a7fee7c93bc49aa280b89683cccaf90cd0386c5673a71a7d7ccdc2dc10af947c4e8babe6318226ba96b2e22e05ef8e7e755b3fc2e2f35764db00fd30008354021e71b92daef18875a9c003cff9f71e4db8dce411ef0651d4b2a81ee29cf1cb104652a048e54ec75c665be8fba70b08b8c643a769a176b93c9dbcc2a30425eb4989860e49580092a13734badc5f8b1222ed3bf50f1816f1d2c982656a0c9fe6d0b930e0f2c1d0cc24dd93a6fb9b9044e5ae7292a13aeb6d325045094750967238acaa3a1bf1c4971d479f6ba06b857af8839a362652e2e904f2300995d1473ee70313df109478858d05ea2d76e9d2b1378967353cc37bd649c0ea903348c1b7c757956f0fdf65e7c7bbeb91af9f53134f4c400b6cebbc2a74bab15d9464e5a0ed177555dde51746525650c8c05177a79faa36d6f94041290d0d1e70ecaf40ea64a31d30327611a16bf7f77528f4b484f128b8180e2c17d1e4fc2e15d5bc3222be5e4420888103b705bb8071cd302b13c49071663d92340f33ac887890cbbba1fcb1bf1771b3ff1bd81bd1e17ad015cf54a6e4616d50f9cd80a5879fb3e6474fbe61c0341e340e1198956812ae1c6f8cee1dc6fb72652358f6e295dea76ca080fdb45b05774cc55874a125e9852e788c2ad2ec91b8217df3879d5a12012d1f427d02359878c45133b35ff810abf217e054868fb57e58e1214393b1247ccced599eb1ade0a768c9d88838d7fb06495caf5a1edc8c833b07bedb15ed457969995ff9af7c16b99ec0bf0cfcf8627633f71088379eafdcd5f6c227db8e9827b88c665d71f34065f2ba8cb42d92b48bcab826df3f871a180c56205989fd74a71d61ea4e6c4962b0f4739808a4473c04a0afae0cb90373032ffb64bf154194c6b1875a85f556e5175b58fc31ff7a578460349a2ad81d322b85b8dc4a3984448a0c4abd18308cbbf9bc04d77df4ec527fdb6fb42d49c8d158ec19fd9e3dbc3549a5f93d12bb7ce195ecbcac246ec2371a8b349405c320e71fb79db00a6accecde99339514772c28b7a88ede063c4300b34013fe5e8bb6db9bb1b72b130371807bf262fdbfb031a87457c66a7284065099053a54aafb775c5ea81901905b316c2458a81fbbbd202bfdb4b7ad6a39b08c4bb41706f6d0f477531d7b15c9a515b8d92bd18944424810e901f23498251e282a9f799109fb35ff45be8a35d88dd03a0b7c9b52e0c08a63804201b8a744974889eed27a140afc64d4183e344f5d8bf766dbcdf3da3f52bd7aa607756b7888712414388e29d5e908c99188c7b82b9b76b97fdde03cd98cffa5f102dcde83355dd07b3e1fce62675062f83e1573ed7d5445aa4a76b49c23e124a8e36d8a30dc852962909a6d0d6efc6f580de84b5f23469db3937bc319f1c8a71085ecee6fa464c37e87b39e05cb0a71cf0e66f6d578527634e01994f57731eb4b7f26f6ba8d62c62ddb4d94ea39eff42fa8db9d9f1714de29cc701a0533c9aded2a53d2847fef0edc35b385d5ebc1019bf67b37fb71f59bc7cb49a2329947a17b5724689be9c51bf28483bd29d5f6b90a8677016c7b70a9db596c6debda20f12b673ce1d3abb77e862fb849c774906e22e4d2a40759034b346e274a3784b56fc1132a3abc7b23b3da7038c4d3976d17586064262454f2caa2ea955225a0ede17950e1c9c05fa8eaf53c92abf29e9668906f23d5c8df4cab6ad6abf25284debcda06ec90a65e61ecfb341f08cce04a4c47fc2e693147b60660425662eb771feef46b6d98d87e4a7e094b067c684cee6b5ca4c9f8fda890639642261eb21981dd67f17da7cb3546fa6012968431eea5b2c15826b7bb20eeb476f4c6e91f27e54ef1321a98f6547467ab8d0a75e1536bd96e0c1aeced40a68b9742c3b9dda7aa54fab6ccf4df2a505f40c055cf9575a4b6ff8783f907f21f0674959ebf7dce6d2af84756952da75b98b44d2338c2da67de32258e3d0cdeecd6a399bd180111aa345ec0e21b2def4194e4e315422d06e19efba95d884d561df4c9f88d4f84d73c4aaaaffa9eba12fd4be7014dd517b4d4c753e279d3acf377ea41bbecb929ff4fff81096c9255bf48f17040f9b3672827c472af19b2b5b17188bfeb1e6321e5c1fc96183c778b835aab3c2ac5f6d8d577c691a3febd53ede2838bcbe762efad0d575aac7a3ddd78de71df2faaa1c661cdd489a2a8ce70ccf706e1b9f17b91a58796ded7d7b52804c8daaad92898561c8c6bca939914876eb24ffbe7661f1a8e41ff15fc365068c824a6f0e0fd1d256f2a582e7585e22e48f296efe385fae65bd34c4f9bc5d8d98abc738ca623ee3993ac42e1ce759934de0524d055b82acd9ac38f587f842fc57c9f713ca01ce9ce9f08ef7779423b4aec092334da96c44c17a99cde1df4512062179d7b7f3c256a20d3c4c8ad2e255c32f7a1e414da7049c6056c64fa34c28d254d4bff47645c3000cc7b25407d4834cd2c6634fbd1cbe00137e62246c18addbc3d3c2e052db720ff74698f7eca2725803a16cc0fc9338bc8957b7b639680fe0e2b5d83ddc9734284ff54cd05bac4333f0a1c7d5e7f5cab1dd57410d71ae12fc6ee4b8258be2eb7ca780d174ca91995fc1dc3af95bd19d09bc546276232f2b42f1e8b83fff270c3265754d717e954e493a2bc2c95941c5d34ae81f606745637e74c5b4d645bf31f060a16610889a3b6a363cb69d0a0b0e170b538872390d3b2924801a2025d4a1de46108c590afb582a1932f562ee7ede8d5b0fad685c814fa3a87d4fbe851f4e178d0ae0b30619e6105731fc637af48faf87daf3bbf198e3bb39490910960c14cd116b62ca4af4742b07a0992ff50040bce2ff15d54bcd7e740619ddf0eb82538b59dd9e7501918d62e5bfa428f6217bb30e2b649c4837788ed0682f63bb3468a9180312e7b24fd48f71ae1790a595e629f70092382b593ee15a9693c79ab77a91f45678712e504e321a6df70ba828a6739e612be465c88456a1f5cbee8e9bb7d74b055c4bc702a61306769c3884d0be6bf127f75c31f74bab79c369eca8780aca636205f5db8138cf26db1c2f0a43f30b72b2cd0afa31449352de8ddd00a875db22d874482130e905427f155f7528f46765230de069f7402823c8ec10a726e54f900666711a5e4aa5981784e03edc1c35d630c37428742217270f1cc1b51bcecf130d84ee9dc28e2d10be76a1f83abce54a50727bb8024f86a3df223821f6c4a024804e9cff8ab588591784b1bdf760c65d1491fabaad943e8d3e114fd9900294f66aee58a90eda172bbc497f1159f6ebef622d7251def664412ef75219e923faf2bd995223bc9f2f46d63642790187d84ead7afbad0a29f00e8c5d4fcd786230d754b7e7f06e42079a7a4b01cdd8f5e766096a513a23aafc08098d01ec5736691522b5f71a5c2ea8cd55b4aaf436737e9e389298fdb31880422a2ad3d1a65765d996563878cc36fa4214f92ea1855dfa68794edff1a8d055a69e87454e8a731294e4f5a734aabf0a3305adcae21225ce99e69b76b9a084226a50173b8d41d348a90d72c3a14be0ed6e869fd6771d034bcffb69d7454ae40c53cafb532f8a775f0a74e6b77daaed8f98b8ef6699043753ba1076f274429bc70d68590fc41e9d94874f894c6d5624e76292c630cdb3df5d579acf4ed5fb6d45ac3694de1a2b613fdc4595155e2df1e9020d55066eb4b3ceb59a38311993688c663a60c49f81c95f68d27208142a7f23b42116f5546ebac4d5ca32819f719871acdbddc95a95ea8c643acfdceecaf54a7596261df292b713100e47d71565a239ae5f873f569a5a9984745a875ad8932daf8f7d3d2ddc8e691ba65c0ff7670890689c86fd9493bb7c1377af26b434f0c6fb46";
-
-fn get_mock_shard_state() -> crate::core::state::ShardState {
-    let mut state = crate::core::state::ShardState::new();
-    let mut sk_bytes = [0u8; crypto::SECRET_KEY_LENGTH];
-    hex::decode_to_slice(GENESIS_SK_HEX, &mut sk_bytes).expect("Invalid hex");
-    let (genesis_pk, _) = crypto::keypair_from_secret_key(&sk_bytes);
-    state.set_balance(genesis_pk, 1_000_000);
-    state
+#[derive(Parser)]
+struct NodeArgs {
+    #[command(subcommand)]
+    command: NodeCommands,
 }
 
-fn get_mock_genesis_keypair() -> (PublicKeyBytes, SecretKeyBytes) {
-    let mut sk_bytes = [0u8; crypto::SECRET_KEY_LENGTH];
-    hex::decode_to_slice(GENESIS_SK_HEX, &mut sk_bytes).expect("Invalid hex");
-    crypto::keypair_from_secret_key(&sk_bytes)
+#[derive(Subcommand)]
+enum NodeCommands {
+    /// Produce a new block from the mempool
+    ProduceBlock,
+}
+
+#[derive(Parser)]
+struct ChainArgs {
+    #[command(subcommand)]
+    command: ChainCommands,
+}
+
+#[derive(Subcommand)]
+enum ChainCommands {
+    /// View the current blockchain
+    View,
 }
 
 
 pub fn run() {
     let cli = Cli::parse();
+    let mut node = ShardNode::load();
 
     match &cli.command {
         Commands::GenerateKeypair => {
             let (pk, sk) = crypto::generate_keypair();
             println!("Public Key: {}", hex::encode(pk));
             println!("Secret Key: {}", hex::encode(sk));
+            // No need to save the node state here
+            return;
         }
         Commands::Wallet(args) => match &args.command {
-            WalletCommands::Balance => {
-                let state = get_mock_shard_state();
-                let (genesis_pk, _) = get_mock_genesis_keypair();
-                let balance = state.get_balance(&genesis_pk);
-                println!("Genesis Public Key: {}", hex::encode(genesis_pk));
-                println!("Balance: {}", balance);
+            WalletCommands::GenesisBalance => {
+                let (genesis_pk, _) = ShardNode::get_genesis_keypair();
+                let balance = node.state.get_balance(&genesis_pk);
+                println!("Genesis Account Balance: {}", balance);
             }
         },
         Commands::Transaction(args) => match &args.command {
             TransactionCommands::CreateTest => {
-                let (sender_pk, sender_sk) = get_mock_genesis_keypair();
+                let (sender_pk, sender_sk) = ShardNode::get_genesis_keypair();
                 let (recipient_pk, _) = crypto::generate_keypair();
-                let amount = 100;
 
                 let mut tx = Transaction {
                     sender: sender_pk,
                     recipient: recipient_pk,
-                    amount,
+                    amount: 100,
                     timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
                     signature: [0; crypto::SIGNATURE_LENGTH],
                 };
@@ -101,13 +111,30 @@ pub fn run() {
                 let signable_bytes = tx.to_signable_bytes();
                 tx.signature = crypto::sign(&signable_bytes, &sender_sk);
 
-                println!("Signed Transaction:");
-                println!("  Sender: {}", hex::encode(tx.sender));
-                println!("  Recipient: {}", hex::encode(tx.recipient));
-                println!("  Amount: {}", tx.amount);
-                println!("  Timestamp: {}", tx.timestamp);
-                println!("  Signature: {}", hex::encode(tx.signature));
+                println!("Test transaction created and added to mempool.");
+                node.mempool.add_transaction(tx);
+            }
+        },
+        Commands::Node(args) => match &args.command {
+            NodeCommands::ProduceBlock => {
+                match node.produce_block() {
+                    Ok(_) => println!("Successfully produced a new block."),
+                    Err(e) => eprintln!("Error producing block: {}", e),
+                }
+            }
+        },
+        Commands::Chain(args) => match &args.command {
+            ChainCommands::View => {
+                println!("Current Blockchain:");
+                for (i, block) in node.chain.iter().enumerate() {
+                    println!("  Block {}:", i);
+                    println!("    Hash: {}", hex::encode(block.block_hash));
+                    println!("    Parent Hashes: {:?}", block.parent_hashes.iter().map(hex::encode).collect::<Vec<_>>());
+                    println!("    Transactions: {}", block.transactions.len());
+                }
             }
         }
     }
+
+    node.save().expect("Failed to save node state");
 }

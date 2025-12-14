@@ -2,11 +2,13 @@
 
 use crate::core::types::Transaction;
 use crate::crypto::PublicKeyBytes;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Represents the state of a single shard.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ShardState {
+    #[serde(with = "crate::core::serde_helpers::hashmap_as_vec")]
     balances: HashMap<PublicKeyBytes, u64>,
 }
 

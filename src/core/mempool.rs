@@ -1,10 +1,11 @@
 //! The `mempool` module contains the `Mempool` struct for storing pending transactions.
 
 use crate::core::types::Transaction;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 /// A simple in-memory mempool for pending transactions.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Mempool {
     transactions: VecDeque<Transaction>,
 }

@@ -1,15 +1,19 @@
 //! The `types` module contains the core data structures for the QRASL blockchain.
 
 use crate::crypto::{PublicKeyBytes, SignatureBytes};
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A simple representation of a transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
+    #[serde(with = "serde_bytes")]
     pub sender: PublicKeyBytes,
+    #[serde(with = "serde_bytes")]
     pub recipient: PublicKeyBytes, // For simplicity, using PublicKeyBytes as address
     pub amount: u64,
     pub timestamp: u64,
+    #[serde(with = "serde_bytes")]
     pub signature: SignatureBytes,
 }
 
@@ -26,7 +30,7 @@ impl Transaction {
 }
 
 /// A block in the Simpler Adaptive DAG.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SimplerAdaptiveDAGBlock {
     pub parent_hashes: Vec<[u8; 32]>,
     pub timestamp: u64,
