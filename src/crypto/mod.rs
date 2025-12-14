@@ -27,6 +27,16 @@ pub fn generate_keypair() -> (PublicKeyBytes, SecretKeyBytes) {
     (pk_bytes, sk_bytes)
 }
 
+/// Derives the public key from a secret key.
+/// In Dilithium, the public key is embedded in the secret key.
+pub fn keypair_from_secret_key(sk_bytes: &SecretKeyBytes) -> (PublicKeyBytes, SecretKeyBytes) {
+    // The public key is the last PUBLIC_KEY_LENGTH bytes of the secret key.
+    let pk_offset = SECRET_KEY_LENGTH - PUBLIC_KEY_LENGTH;
+    let pk_bytes: PublicKeyBytes = sk_bytes[pk_offset..].try_into().expect("Unable to extract public key from secret key");
+    (pk_bytes, *sk_bytes)
+}
+
+
 /// Signs a message with a secret key using detached signatures.
 pub fn sign(msg: &[u8], sk_bytes: &SecretKeyBytes) -> SignatureBytes {
     let sk = dilithium5::SecretKey::from_bytes(sk_bytes).expect("Failed to create secret key from bytes");
